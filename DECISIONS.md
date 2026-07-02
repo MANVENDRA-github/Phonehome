@@ -29,3 +29,6 @@ Rationale: maximum-adoption default for a distribution-optimized OSS project; ma
 
 **D-008 · 2026-07-02 · Docs-first foundation; PROOF.md discipline from M0.**
 Rationale: the repo starts with PRD/RESEARCH/ARCHITECTURE/SPEC so any agent or future session has full context; all published claims/numbers/GIFs must come from real runs recorded in PROOF.md (practice carried over from the owner's prior projects, where it worked).
+
+**D-009 · 2026-07-02 · The committed dev fixture is SYNTHETIC-REALISTIC, not a real capture — deviation from SPEC M1's "anonymized real fixture", disclosed.**
+Rationale: no live Pi-hole network was available at M1. `fixtures/household-01.jsonl` is generated deterministically (`core/examples/gen_fixture.rs`, seeded — same bytes every run): 15 plausible devices over 8 days using real vendor telemetry/ad-network hostnames. Labeled in `fixtures/README.md`; any demo media from it must carry a "replayed fixture" label. **Follow-up:** capture and anonymize a real household fixture (hash MACs, drop non-load-bearing domains) once a Pi-hole is running — ideally before the M4 hero GIF, mandatory before launch claims.

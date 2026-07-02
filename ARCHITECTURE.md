@@ -30,7 +30,7 @@ One Rust service (daemon + API + embedded static UI) plus a SQLite file. The bro
 ## 2. Components
 
 ### 2.1 Ingestion (`Ingestor` trait)
-- **Contract:** `poll(since: Cursor) -> Vec<QueryEvent>` where `QueryEvent = { ts, client_ip, client_mac?, domain, qtype, blocked, source }`. Cursor persisted per source; polling is incremental and idempotent (dedup key: source + native query id, else `hash(ts, client, domain)`).
+- **Contract (as implemented at M1):** `poll(cursor: Option<&str>) -> Batch { events: Vec<QueryEvent>, next_cursor }` where `QueryEvent = { ts, client_ip, client_mac?, domain, qtype, blocked, source }`. Exactly-once is a two-party contract: the adapter guarantees a re-poll from any returned cursor never re-yields delivered events (Pi-hole: monotonic FTL query id filters the inclusive time-boundary overlap), and the store commits events + cursor **in one transaction** (`Store::apply_batch`), so a crash replays a whole batch or none.
 - **Pi-hole v6 adapter:** session auth against the v6 REST API, query history endpoint. Version-pinned; failures degrade to a visible "source stale since …" badge, never a crash loop.
 - **AdGuard Home adapter:** `/control/querylog` with cursor pagination. Proves the trait boundary — nothing outside the adapters may know which backend is in use.
 - **Fixture replayer:** third `Ingestor` impl reading a committed JSONL fixture (anonymized real capture) at configurable speed. This is how all dev/test/demo happens without a live network, and how CI stays deterministic.
@@ -60,10 +60,13 @@ Runs per unique domain, cached in `destinations`:
 ## 3. Storage sketch (SQLite, WAL mode)
 
 ```sql
-sources(id, kind, base_url, cursor, last_ok_at)
+-- implemented at M1 (schema_version 1):
+sources(id PRIMARY KEY, kind, cursor, last_ok_at)          -- base_url lives in env config until the M5 wizard
+query_rollups(source_id, client_key, domain, bucket_hour,  -- client_key = MAC else IP; M2 migrates to device_id
+              count, blocked_count)                        -- raw events roll up; no per-query retention (D-005)
+-- arriving with M2/M3:
 devices(id, mac, ip_hint, name_user, name_dhcp, name_mdns, oui_vendor, first_seen, merged_into)
 destinations(domain PRIMARY KEY, entity, category, tracker_lists, country, resolved_ip, enriched_at)
-query_rollups(device_id, domain, bucket_hour, count, blocked_count)   -- raw events roll up; no per-query retention by default
 snapshots(device_id, week_start, distinct_domains, tracker_domains, entities_json, countries_json, volume, score)
 ```
 

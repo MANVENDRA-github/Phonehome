@@ -14,7 +14,7 @@ Ground rules for every milestone:
 **Accept:** `cargo test` and `npm run build` green locally and in CI; `docker compose up` serves a "phonehome alive" page with the embedded UI.
 **Proof:** CI run link + pasted local command output in PROOF.md §M0.
 
-## M1 — Ingestion: Pi-hole v6 + fixture replayer
+## M1 — Ingestion: Pi-hole v6 + fixture replayer ✅ (done 2026-07-02 — evidence: PROOF.md §M1; fixture is synthetic-labeled per D-009; live Pi-hole validation pending per the fallback below)
 **Deliverable:** `Ingestor` trait; Pi-hole v6 adapter (auth, incremental query-history polling, persisted cursor); JSONL fixture replayer as second impl; SQLite storage (`sources`, `query_rollups` minimal form); anonymized real fixture committed.
 **Accept:** replayer run ingests the full fixture with zero loss/dup across a mid-run restart (property test); live Pi-hole poll shown working against a real instance (or, if no Pi-hole is reachable, a recorded-HTTP-fixture test plus an explicit PROOF note that live validation is pending).
 **Proof:** test output + row counts vs fixture line count; cursor-restart test output. PROOF.md §M1.

@@ -73,3 +73,57 @@ Bonus (observed, not staged): starting a second instance while the first held th
 - Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28608143084 — `build-test` pass (1m3s: UI build, fmt, clippy, tests) and `docker-smoke` pass (1m0s: compose build + live health/page probes) on PR #2.
 
 **M0 acceptance met:** `cargo test` + `npm run build` green locally and in CI; `docker compose up` serving the alive page proven in CI (local Docker pending machine virtualization — tracked for M5's clean-install test, which needs it anyway).
+
+---
+
+## §M1 — Ingestion: Pi-hole v6 + fixture replayer (2026-07-02)
+
+### Fixture (D-009 — synthetic-realistic, disclosed)
+
+Generated deterministically: `cargo run -p phonehome-core --example gen_fixture > fixtures/household-01.jsonl` →
+```
+generated 7189 events across 15 devices
+7189 lines · 1,148,038 bytes
+```
+Independent cross-check: `grep -c '"blocked":true' fixtures/household-01.jsonl` → **2453**.
+
+### Tests — PASS (22 test executions, 0 failures)
+
+```
+phonehome-core (7):    event serde round-trips, client_key MAC/IP fallback, bucket_hour floor,
+                       replayer exact-once chunking, cursor resume, malformed-line hard error
+phonehome-daemon (11): store atomic apply+cursor · restart-resume (real db file, zero loss/dup)
+                       · PROPTEST: rollups invariant under arbitrary batch splitting
+                       pihole: auth→poll→map · boundary overlap never duplicates (FTL id filter)
+                       · 401 re-auth retry · bad-password clean error
+                       api: health, stats-zeroes, embedded UI, api-404
+e2e (replayer_e2e):    full_fixture_ingests_exactly_once_across_a_restart ... ok
+```
+The e2e test ingests 3,000 events, hard-drops store + ingestor (simulated crash), resumes from the persisted cursor only, and asserts final totals against an independent re-read of the fixture: total=7189, blocked=2453, domains, clients, and cursor==7189 all exact.
+
+`cargo fmt --check` clean; `cargo clippy --all-targets -- -D warnings` clean.
+
+### Live run — PASS
+
+`PHONEHOME_FIXTURE=fixtures/household-01.jsonl cargo run -p phonehome-daemon`, polling `/api/stats` from another shell (1,000-event batches land once per second):
+
+```
+poll 2:  total=1000
+poll 8:  total=3000
+poll 16: total=6000
+poll 21: total=7189   ← FULLY INGESTED
+{"total_queries":7189,"total_blocked":2453,"distinct_domains":75,"distinct_clients":15,
+ "rollup_rows":5128,"sources":[{"id":"fixture","kind":"fixture","cursor":"7189",
+ "last_ok_at":1783013180588}]}
+```
+7,189 raw events → 5,128 rollup rows (hourly aggregation working); `total_blocked` matches the independent grep exactly; raw events are not retained (D-005).
+
+### Live Pi-hole — PENDING (disclosed, per SPEC M1's explicit fallback)
+
+No Pi-hole instance exists on this network yet. The adapter is validated against **recorded-shape HTTP fixtures** (wiremock): session auth, sid header, query mapping (GRAVITY→blocked / FORWARDED→allowed, fractional-second timestamps), inclusive-`from` boundary dedup via monotonic FTL ids, 401 re-auth retry, and bad-password handling. **Follow-up:** validate against a real Pi-hole v6 and capture the anonymized real fixture (D-009) — target before M4's hero GIF.
+
+### CI — green
+
+Run: https://github.com/MANVENDRA-github/Phonehome/actions — `build-test` + `docker-smoke` on PR #3 (link finalized post-push).
+
+**M1 acceptance met:** replayer ingests the full fixture with zero loss/dup across a mid-run restart (property test + e2e); Pi-hole polling proven via recorded HTTP fixtures with the live-instance note above; row counts vs fixture line count exact; cursor-restart output above.
