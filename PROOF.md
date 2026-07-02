@@ -70,6 +70,6 @@ Bonus (observed, not staged): starting a second instance while the first held th
 
 ### CI — PASS
 
-- Run: _link added post-push:_ https://github.com/MANVENDRA-github/Phonehome/actions — `build-test` (UI build, fmt, clippy, tests) and `docker-smoke` (compose build + live probes) both green on PR #2.
+- Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28608143084 — `build-test` pass (1m3s: UI build, fmt, clippy, tests) and `docker-smoke` pass (1m0s: compose build + live health/page probes) on PR #2.
 
 **M0 acceptance met:** `cargo test` + `npm run build` green locally and in CI; `docker compose up` serving the alive page proven in CI (local Docker pending machine virtualization — tracked for M5's clean-install test, which needs it anyway).
