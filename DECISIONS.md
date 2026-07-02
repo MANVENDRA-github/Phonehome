@@ -1,0 +1,31 @@
+# Phonehome — Decision Log
+
+One entry per decision that shapes the product or architecture. Newest at the bottom. Reversals get a new entry referencing the old one — history is never edited.
+
+Format: `D-xxx · date · decision — rationale (alternatives considered)`
+
+---
+
+**D-001 · 2026-07-02 · DNS-log ingestion only — no packet capture, no ARP spoofing, no inline gateway mode.**
+Rationale: this is the verified-open competitive wedge (everything destination-aware today intercepts traffic or sells hardware — see RESEARCH.md §2), it means zero changes to the user's network trust model, and it keeps v1 buildable by one person. Known cost: DoH/DoT-bypassing devices are partially invisible — disclosed in UI/README rather than papered over. (Alternatives: pcap sidecar — rejected for scope + trust; router firmware — rejected, that's SPR's lane.)
+
+**D-002 · 2026-07-02 · Rust backend: single binary, Axum + rusqlite, UI embedded via rust-embed.**
+Rationale: single-artifact distribution is the verified easy-install pattern; a long-running low-footprint daemon on home hardware (often a Pi) suits Rust; and this is a deliberate Rust-depth project for the owner. (Alternatives: Node/TS backend — faster for the owner but weaker deploy story; Go — fine, but no learning payoff.)
+
+**D-003 · 2026-07-02 · Pi-hole v6 and AdGuard Home are the first-class v1 sources, behind one `Ingestor` trait; unbound/dnsmasq deferred to v2.**
+Rationale: the two cover the overwhelming share of self-hosted DNS filtering; the trait keeps the core backend-blind so v2 adapters are additive. Fixture replayer is a mandatory third implementation (dev/CI/demo without a live network).
+
+**D-004 · 2026-07-02 · Enrichment stack: oisd + StevenBlack blocklists, MaxMind GeoLite2-Country, curated in-repo `entities.toml` for domain→company mapping.**
+Rationale: all freely licensable, bundleable as snapshots, and community-editable — entity mapping is the weakest public dataset, so making it a PR-able data file turns the weakness into a contribution surface. GeoLite2 needs a free MaxMind key for updates; documented, with bundled fallback.
+
+**D-005 · 2026-07-02 · Privacy stance: 100% local, zero telemetry, no cloud path, raw queries not retained.**
+Rationale: the product's entire moral position — it cannot itself be a phone-home. Only outbound traffic is user-initiated dataset refresh; `strict_local` config disables even that. Raw events roll up to hourly counts and drop (privacy doubling as scaling strategy). Non-negotiable; any exception requires a new D-xxx and a very good reason.
+
+**D-006 · 2026-07-02 · Ships as one `docker compose up` — one container, one volume; no external DB/broker/workers.**
+Rationale: install friction ≤2 commands is a hard PRD requirement; multi-service self-hosted stacks are a documented adoption killer even for popular tools. SQLite (WAL) is sufficient for household scale by design.
+
+**D-007 · 2026-07-02 · MIT license.**
+Rationale: maximum-adoption default for a distribution-optimized OSS project; matches the owner's other public work. (Alternative AGPL — reconsider only if cloud-resale becomes a real concern; would be a new D-xxx.)
+
+**D-008 · 2026-07-02 · Docs-first foundation; PROOF.md discipline from M0.**
+Rationale: the repo starts with PRD/RESEARCH/ARCHITECTURE/SPEC so any agent or future session has full context; all published claims/numbers/GIFs must come from real runs recorded in PROOF.md (practice carried over from the owner's prior projects, where it worked).
