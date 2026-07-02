@@ -9,14 +9,15 @@ use axum::{
     extract::State,
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use phonehome_core::{FixtureReplayer, Ingestor};
 use rust_embed::RustEmbed;
+use serde::Deserialize;
 use std::path::PathBuf;
 use std::time::Duration;
-use store::Store;
+use store::{DeviceError, Store};
 
 /// `ui/dist` compiled into the binary. Build order: `npm run build` in `ui/`
 /// first, then `cargo build` (see CLAUDE.md commands; Dockerfile and CI follow it).
@@ -32,6 +33,9 @@ fn app(store: Store) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/stats", get(stats))
+        .route("/api/devices", get(devices))
+        .route("/api/devices/rename", post(rename_device))
+        .route("/api/devices/merge", post(merge_devices))
         .fallback(static_handler)
         .with_state(store)
 }
@@ -54,6 +58,58 @@ async fn stats(State(store): State<Store>) -> Result<Json<store::Stats>, Respons
 fn internal_error(e: impl std::fmt::Display) -> Response {
     tracing::error!(error = %e, "internal error");
     (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+}
+
+async fn devices(State(store): State<Store>) -> Result<Json<Vec<store::DeviceRow>>, Response> {
+    let devices = tokio::task::spawn_blocking(move || store.list_devices())
+        .await
+        .map_err(internal_error)?
+        .map_err(internal_error)?;
+    Ok(Json(devices))
+}
+
+#[derive(Deserialize)]
+struct RenameReq {
+    id: i64,
+    name: String,
+}
+
+async fn rename_device(
+    State(store): State<Store>,
+    Json(req): Json<RenameReq>,
+) -> Result<StatusCode, Response> {
+    let renamed = tokio::task::spawn_blocking(move || store.rename_device(req.id, &req.name))
+        .await
+        .map_err(internal_error)?
+        .map_err(internal_error)?;
+    if renamed {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err((StatusCode::NOT_FOUND, "no such device").into_response())
+    }
+}
+
+#[derive(Deserialize)]
+struct MergeReq {
+    source: i64,
+    into: i64,
+}
+
+async fn merge_devices(
+    State(store): State<Store>,
+    Json(req): Json<MergeReq>,
+) -> Result<StatusCode, Response> {
+    let result = tokio::task::spawn_blocking(move || store.merge_devices(req.source, req.into))
+        .await
+        .map_err(internal_error)?;
+    match result {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(DeviceError::NotFound) => {
+            Err((StatusCode::NOT_FOUND, "no such device").into_response())
+        }
+        Err(DeviceError::BadMerge(m)) => Err((StatusCode::BAD_REQUEST, m).into_response()),
+        Err(DeviceError::Db(e)) => Err(internal_error(e)),
+    }
 }
 
 /// Serve the embedded UI; unknown non-API paths fall back to `index.html` (SPA).
@@ -216,5 +272,129 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    // --- M2 device endpoints ---
+
+    use phonehome_core::QueryEvent;
+    use std::net::IpAddr;
+
+    fn seed_store() -> Store {
+        let store = Store::open_in_memory().unwrap();
+        let ev = |mac: &str, ip: &str, domain: &str, blocked: bool| QueryEvent {
+            ts: 0,
+            client_ip: ip.parse::<IpAddr>().unwrap(),
+            client_mac: Some(mac.into()),
+            domain: domain.into(),
+            qtype: "A".into(),
+            blocked,
+            source: "fixture".into(),
+        };
+        store
+            .apply_batch(
+                "fixture",
+                "fixture",
+                &[
+                    ev("f0:5c:77:11:22:33", "192.168.1.20", "samsungads.com", true),
+                    ev("f4:0f:24:40:50:60", "192.168.1.31", "xp.apple.com", true),
+                ],
+                Some("2"),
+                0,
+            )
+            .unwrap();
+        store
+    }
+
+    async fn json_body(res: axum::response::Response) -> serde_json::Value {
+        let bytes = to_bytes(res.into_body(), 1_048_576).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn devices_endpoint_lists_named_devices() {
+        let res = app(seed_store())
+            .oneshot(Request::get("/api/devices").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_body(res).await;
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert!(arr
+            .iter()
+            .any(|d| d["vendor"] == "Samsung Electronics" && d["queries"] == 1));
+    }
+
+    #[tokio::test]
+    async fn rename_then_merge_endpoints_work() {
+        let store = seed_store();
+        let ids: Vec<i64> = store.list_devices().unwrap().iter().map(|d| d.id).collect();
+
+        // Rename first device.
+        let res = app(store.clone())
+            .oneshot(
+                Request::post("/api/devices/rename")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"id": ids[0], "name": "Living Room TV"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            store.list_devices().unwrap()[0].display_name,
+            "Living Room TV"
+        );
+
+        // Merge second into first.
+        let res = app(store.clone())
+            .oneshot(
+                Request::post("/api/devices/merge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"source": ids[1], "into": ids[0]}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert_eq!(store.list_devices().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rename_missing_device_is_404() {
+        let res = app(seed_store())
+            .oneshot(
+                Request::post("/api/devices/rename")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"id": 9999, "name": "ghost"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn merge_into_self_is_400() {
+        let store = seed_store();
+        let id = store.list_devices().unwrap()[0].id;
+        let res = app(store)
+            .oneshot(
+                Request::post("/api/devices/merge")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"source": id, "into": id}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }
