@@ -1,0 +1,51 @@
+# OUI vendor prefixes — CURATED SEED (not the full IEEE MA-L registry).
+#
+# Format: PREFIX,Vendor   where PREFIX = first 3 MAC octets as 6 hex chars
+# (uppercase, no separators). Same shape as the public IEEE registry, so you can
+# replace this file with the full `oui.csv` to identify arbitrary hardware.
+#
+# This seed covers the dev fixture's device vendors (see fixtures/README.md,
+# D-009) plus a handful of common home-network vendors. Vendor names for the
+# fixture prefixes are illustrative, consistent with each simulated device — they
+# are NOT asserted to match the live IEEE assignment for that prefix.
+#
+# --- dev fixture (household-01) ---
+F05C77,Samsung Electronics
+00626E,Amazon Technologies
+6854FD,Amazon Technologies
+501479,iRobot
+18B430,Nest Labs
+A851AB,Google
+F40F24,Apple
+DC41A9,Microsoft
+3C22FB,Apple
+7CBB8A,Nintendo
+008092,Seiko Epson
+641666,Belkin International
+B0BE76,TP-Link Technologies
+AC84C6,Espressif
+# --- common home-network vendors ---
+B827EB,Raspberry Pi Foundation
+DCA632,Raspberry Pi Trading
+E45F01,Raspberry Pi Trading
+D83ADD,Google
+1CF29A,Google
+3C5AB4,Google
+44070B,Amazon Technologies
+FCA183,Amazon Technologies
+D073D5,LIFX
+000C43,Ralink/TP-Link
+EC1BBD,Roku
+CC6DA0,Roku
+B0A737,Roku
+DCA904,Sonos
+5CAAFD,Sonos
+000E58,Sonos
+90724F,Sonos
+C82B96,Espressif
+2462AB,Espressif
+A020A6,Espressif
+54AF97,Vizio
+2035F0,Vizio
+C0056E,Wyze
+2CAA8E,Wyze
