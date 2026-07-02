@@ -124,6 +124,6 @@ No Pi-hole instance exists on this network yet. The adapter is validated against
 
 ### CI — green
 
-Run: https://github.com/MANVENDRA-github/Phonehome/actions — `build-test` + `docker-smoke` on PR #3 (link finalized post-push).
+Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28609222209 — `build-test` pass (1m25s) + `docker-smoke` pass (2m1s) on PR #3.
 
 **M1 acceptance met:** replayer ingests the full fixture with zero loss/dup across a mid-run restart (property test + e2e); Pi-hole polling proven via recorded HTTP fixtures with the live-instance note above; row counts vs fixture line count exact; cursor-restart output above.
