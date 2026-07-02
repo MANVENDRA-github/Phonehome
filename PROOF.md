@@ -186,6 +186,6 @@ Merge arithmetic verified exactly: 1155+516=1671 queries, 339+188=527 blocked, d
 
 ### CI — green
 
-Run: (link added post-push) `build-test` + `docker-smoke` on PR #4.
+Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28610575066 — `build-test` pass (36s) + `docker-smoke` pass (2m4s) on PR #4.
 
 **M2 acceptance met:** the fixture's clients resolve to named devices per the precedence rules (before table); merge survives re-ingestion (keystone test + reopened-db live check); before/after device table captured from a real run above.
