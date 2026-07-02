@@ -6,7 +6,7 @@ Read this first in every session. It exists so any AI coding agent (Claude Code,
 
 **Phonehome** — a self-hosted privacy radar for home networks. It ingests DNS query logs from Pi-hole v6 / AdGuard Home (never packet capture), attributes queries to named LAN devices, tags destinations against tracker blocklists + GeoIP + a company-entity map, and renders per-device privacy scorecards with weekly diffs plus a WebGPU globe of device→destination arcs. 100% local, zero telemetry, ships as one `docker compose up`.
 
-Current phase: **pre-code — docs foundation merged, next work item is SPEC.md M0 (scaffold).**
+Current phase: **M0 (scaffold) done — next work item is SPEC.md M1 (Pi-hole v6 ingestion + fixture replayer).**
 
 ## Read order for context
 
@@ -35,9 +35,22 @@ Current phase: **pre-code — docs foundation merged, next work item is SPEC.md 
 - **Fixtures over live dependencies**: development and CI run on the JSONL replayer (ARCHITECTURE §2.1); anonymize any committed capture (hash MACs, keep OUI prefix; drop non-load-bearing domains).
 - **Testing bar**: adapter fixtures (wiremock), property tests on cursor/dedup logic, an end-to-end replayer integration test, and the Playwright smoke that doubles as the GIF harness (ARCHITECTURE §5).
 
-## Stack (intended — confirm against code once M0 lands)
+## Stack & commands (confirmed at M0)
 
-Rust workspace: `daemon/` (bin) + `core/` (lib) — Axum, rusqlite (WAL), rust-embed. UI: `ui/` — Vite + React + TypeScript, Three.js `WebGPURenderer` (WebGL fallback), Tailwind. Data: bundled IEEE OUI table, oisd + StevenBlack snapshots, GeoLite2-Country, `entities.toml`. Deploy: Dockerfile + docker-compose. Commands will be listed here once they exist (M0 updates this section).
+Rust workspace: `daemon/` (bin — Axum 0.8, tokio, rust-embed) + `core/` (lib — the normalized `QueryEvent` model). UI: `ui/` — Vite 6 + React 19 + TypeScript + Tailwind v4 (Three.js arrives at M4; rusqlite arrives at M1). Deploy: multi-stage Dockerfile + docker-compose (one service, one volume). CI: `.github/workflows/ci.yml` — `build-test` (UI build, fmt, clippy `-D warnings`, tests) + `docker-smoke` (compose up + live health/page probes).
+
+**Build order matters:** the daemon embeds `ui/dist` at compile time — always build the UI before the daemon.
+
+```sh
+npm --prefix ui install        # once
+npm --prefix ui run build      # typecheck (tsc --noEmit) + vite bundle -> ui/dist
+cargo test                     # workspace tests (needs ui/dist to exist)
+cargo run -p phonehome-daemon  # serve on http://localhost:8480 (PHONEHOME_PORT to override)
+cargo fmt --check && cargo clippy --all-targets -- -D warnings   # lint gate, same as CI
+docker compose up -d --build   # full container build + run (proven in CI; local Docker
+                               #   currently blocked on this dev machine — see PROOF.md §M0)
+npm --prefix ui run dev        # UI dev server with /api proxy to a running daemon
+```
 
 ## Owner context
 

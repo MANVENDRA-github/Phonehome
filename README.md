@@ -2,7 +2,7 @@
 
 **Meet everything your house talks to.** Phonehome is a self-hosted privacy radar for your home network: it reads the DNS logs you already have (Pi-hole, AdGuard Home), figures out *which device* asked for *what*, and shows you — on a live 3D globe and per-device scorecards — exactly where your smart TV, doorbell, and every other gadget phones home.
 
-> **Status: pre-v1 — design & documentation phase.** No code yet; the build starts at [SPEC.md](SPEC.md) M0. Star/watch to follow along.
+> **Status: pre-v1 — M0 scaffold merged.** The single-binary daemon (Rust/Axum) + embedded UI skeleton builds, tests green, and serves an alive page; evidence in [PROOF.md](PROOF.md). Next: [SPEC.md](SPEC.md) M1 — Pi-hole v6 ingestion. Star/watch to follow along.
 
 <!-- HERO: 10-second GIF goes here at M4 — the globe firing arcs from "Samsung TV" to ad servers across the planet. PROOF rule: the GIF must render real data from a real network. -->
 
@@ -39,6 +39,7 @@ Tools that know *who is on your network* (NetAlertX) don't know *where devices s
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design — Rust daemon, SQLite schema, enrichment, globe frontend |
 | [SPEC.md](SPEC.md) | v1 build spec — milestones M0–M5 with acceptance criteria and proof rules |
 | [DECISIONS.md](DECISIONS.md) | Decision log (D-001…) — what was decided and why |
+| [PROOF.md](PROOF.md) | Per-milestone evidence — real command output, real measurements |
 | [CLAUDE.md](CLAUDE.md) | Operating context for AI coding agents working in this repo |
 
 ## License
