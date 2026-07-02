@@ -25,6 +25,7 @@ RUN useradd -r -s /usr/sbin/nologin phonehome \
 COPY --from=build /app/target/release/phonehome-daemon /usr/local/bin/phonehome-daemon
 USER phonehome
 ENV PHONEHOME_PORT=8480
+ENV PHONEHOME_DB=/data/phonehome.db
 EXPOSE 8480
 VOLUME ["/data"]
 CMD ["phonehome-daemon"]

@@ -3,5 +3,6 @@ target/
 ui/node_modules/
 ui/dist/
 data/
+fixtures/
 *.md
 .github/

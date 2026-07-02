@@ -6,7 +6,7 @@ Read this first in every session. It exists so any AI coding agent (Claude Code,
 
 **Phonehome** — a self-hosted privacy radar for home networks. It ingests DNS query logs from Pi-hole v6 / AdGuard Home (never packet capture), attributes queries to named LAN devices, tags destinations against tracker blocklists + GeoIP + a company-entity map, and renders per-device privacy scorecards with weekly diffs plus a WebGPU globe of device→destination arcs. 100% local, zero telemetry, ships as one `docker compose up`.
 
-Current phase: **M0 (scaffold) done — next work item is SPEC.md M1 (Pi-hole v6 ingestion + fixture replayer).**
+Current phase: **M1 (ingestion) done — next work item is SPEC.md M2 (device identity/registry).** Open follow-ups: live Pi-hole validation + a real anonymized fixture (D-009); local Docker blocked on machine virtualization (PROOF §M0).
 
 ## Read order for context
 
@@ -50,6 +50,14 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings   # lint gate, sa
 docker compose up -d --build   # full container build + run (proven in CI; local Docker
                                #   currently blocked on this dev machine — see PROOF.md §M0)
 npm --prefix ui run dev        # UI dev server with /api proxy to a running daemon
+
+# Ingestion (M1) — sources configured via env until the M5 wizard:
+PHONEHOME_FIXTURE=fixtures/household-01.jsonl cargo run -p phonehome-daemon   # replay the dev fixture
+# PHONEHOME_PIHOLE_URL=http://pi.hole PHONEHOME_PIHOLE_PASSWORD=... [PHONEHOME_POLL_INTERVAL_SECS=15]
+# PHONEHOME_DB=data/phonehome.db (default; container sets /data/phonehome.db)
+curl localhost:8480/api/stats  # ingestion totals + per-source cursor state
+# regenerate the fixture (deterministic, D-009):
+cargo run -p phonehome-core --example gen_fixture > fixtures/household-01.jsonl
 ```
 
 ## Owner context

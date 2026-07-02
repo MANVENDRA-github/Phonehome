@@ -4,10 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Phonehome core: normalized event model, device identity, enrichment (source-agnostic)"
+description = "Phonehome core: normalized event model, ingestion contract, fixture replayer (source-agnostic)"
 
 [dependencies]
+async-trait = "0.1"
 serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt"] }
