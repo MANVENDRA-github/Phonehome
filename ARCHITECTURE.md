@@ -37,9 +37,9 @@ One Rust service (daemon + API + embedded static UI) plus a SQLite file. The bro
 
 ### 2.2 Device identity
 - Registry keyed by MAC when available, else stable client IP (flagged lower-confidence).
-- Naming resolution order: user-assigned > DHCP hostname > mDNS name > OUI vendor + short id (`"Espressif a4:cf"`).
-- OUI lookup from the bundled IEEE table; mDNS via passive mDNS crate listener (optional feature flag — it's the only component that touches the LAN beyond the source APIs).
-- Users can rename and merge devices in the UI; merges are recorded as aliases so re-discovery doesn't resurrect duplicates.
+- Naming resolution order (implemented at M2, `core::naming`): user-assigned > DHCP hostname > mDNS name > OUI vendor + short MAC suffix (`"Samsung Electronics · 22:33"`) > raw identity.
+- OUI lookup from a bundled curated table (`core/data/oui.csv`, `core::oui`) — same CSV shape as the IEEE registry so the full table drops in. `name_dhcp`/`name_mdns` columns exist and are honored by precedence; **automated DHCP/mDNS discovery is deferred** (documented follow-up), as is joining Pi-hole `/api/network/devices` for MAC+hostname.
+- Devices are an **overlay** (D-010): each raw device's `identity_key` = the rollup `client_key`. Rename sets `name_user`; merge sets `merged_into` (an alias pointing at the canonical device). Ingestion only upserts identity/last-seen — never `merged_into` or names — so re-discovery never resurrects a merged device. Device-level activity is folded at read time via `COALESCE(merged_into, id)`.
 
 ### 2.3 Enrichment
 Runs per unique domain, cached in `destinations`:
@@ -60,12 +60,14 @@ Runs per unique domain, cached in `destinations`:
 ## 3. Storage sketch (SQLite, WAL mode)
 
 ```sql
--- implemented at M1 (schema_version 1):
+-- implemented at M1–M2 (schema_version 2):
 sources(id PRIMARY KEY, kind, cursor, last_ok_at)          -- base_url lives in env config until the M5 wizard
-query_rollups(source_id, client_key, domain, bucket_hour,  -- client_key = MAC else IP; M2 migrates to device_id
+query_rollups(source_id, client_key, domain, bucket_hour,  -- client_key = MAC else IP; stays the key (D-010)
               count, blocked_count)                        -- raw events roll up; no per-query retention (D-005)
--- arriving with M2/M3:
-devices(id, mac, ip_hint, name_user, name_dhcp, name_mdns, oui_vendor, first_seen, merged_into)
+devices(id, identity_key UNIQUE, is_mac, mac, ip_hint,     -- overlay: identity_key = client_key (D-010)
+        oui_vendor, name_user, name_dhcp, name_mdns,       -- names by precedence (core::naming)
+        first_seen, last_seen, merged_into)                -- merged_into = alias -> canonical device
+-- arriving with M3:
 destinations(domain PRIMARY KEY, entity, category, tracker_lists, country, resolved_ip, enriched_at)
 snapshots(device_id, week_start, distinct_domains, tracker_domains, entities_json, countries_json, volume, score)
 ```
