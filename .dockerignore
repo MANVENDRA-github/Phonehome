@@ -1,0 +1,7 @@
+.git/
+target/
+ui/node_modules/
+ui/dist/
+data/
+*.md
+.github/
