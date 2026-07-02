@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      # UI first: the daemon embeds ui/dist at compile time (see ARCHITECTURE.md)
+      - name: Build UI (typecheck + bundle)
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: rustfmt
+        run: cargo fmt --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: tests
+        run: cargo test
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image and start compose
+        run: docker compose up -d --build
+
+      - name: Probe /api/health and the UI page
+        run: |
+          ok=""
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:8480/api/health; then ok=1; echo; break; fi
+            sleep 2
+          done
+          test "$ok" = "1"
+          curl -sf http://localhost:8480/ | grep -qi phonehome
+          echo "alive page served by the container"
+
+      - name: Container logs (on failure)
+        if: failure()
+        run: docker compose logs
+
+      - name: Teardown
+        if: always()
+        run: docker compose down -v
