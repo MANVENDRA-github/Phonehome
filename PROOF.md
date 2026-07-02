@@ -127,3 +127,65 @@ No Pi-hole instance exists on this network yet. The adapter is validated against
 Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28609222209 — `build-test` pass (1m25s) + `docker-smoke` pass (2m1s) on PR #3.
 
 **M1 acceptance met:** replayer ingests the full fixture with zero loss/dup across a mid-run restart (property test + e2e); Pi-hole polling proven via recorded HTTP fixtures with the live-instance note above; row counts vs fixture line count exact; cursor-restart output above.
+
+---
+
+## §M2 — Device identity (2026-07-02)
+
+### Tests — PASS (45 test executions, 0 failures)
+
+New coverage on top of M1:
+```
+phonehome-core: oui (case-insensitive resolve, unknown→None, garbage-safe, table parses)
+                naming (user>dhcp>mdns>vendor>identity precedence, blank-name ignore, no-mac suffix)
+phonehome-daemon store:
+   devices_resolve_and_name_by_precedence      (MAC→vendor name; MAC-less client→IP)
+   rename_takes_precedence_and_clears          (name_user wins; blank resets to vendor)
+   merge_folds_activity_and_survives_reingestion  ← the M2 keystone
+   merge_rejects_self_and_missing              (BadMerge / NotFound)
+   backfill_seeds_devices_from_v1_rollups      (schema-v1 db → devices seeded from history)
+   rollups_are_invariant_under_batch_splitting (proptest, now also asserts distinct_devices)
+phonehome-daemon api:
+   devices_endpoint_lists_named_devices · rename_then_merge_endpoints_work
+   rename_missing_device_is_404 · merge_into_self_is_400
+```
+`cargo fmt --check` clean; `cargo clippy --all-targets -- -D warnings` clean.
+
+The keystone `merge_folds_activity_and_survives_reingestion` merges two devices, asserts the folded view (one device, summed activity), then **reopens the db and re-ingests the same clients** — asserting the merge does not resurrect (the D-010 property).
+
+### Live run — before/after device table (real fixture ingestion)
+
+`PHONEHOME_FIXTURE=fixtures/household-01.jsonl ./phonehome-daemon`, full fixture ingested (`distinct_devices=15`), then `GET /api/devices`:
+
+**BEFORE** — 15 clients resolved to named devices (MAC → OUI vendor; the MAC-less client falls back to its IP):
+```
+Google · 20:30               Google                a8:51:ab:10:20:30   1514   671   10
+Apple · 50:60                Apple                 f4:0f:24:40:50:60   1155   339    6
+Samsung Electronics · 22:33  Samsung Electronics   f0:5c:77:11:22:33    967   350   10
+Microsoft · 80:90            Microsoft             dc:41:a9:70:80:90    710   204    9
+Amazon Technologies · 55:66  Amazon Technologies   00:62:6e:44:55:66    691   253    5
+Apple · b2:c3                Apple                 3c:22:fb:a1:b2:c3    516   188    5
+… (9 more) …
+192.168.1.50                 (none)                192.168.1.50          66    17    3   ← MAC-less → IP
+15 devices                                                        (queries blocked domains)
+```
+
+**AFTER** — `POST /api/devices/rename` (Samsung → "Living Room TV", HTTP 204) and `POST /api/devices/merge` (the two Apple devices, HTTP 204):
+```
+Apple · 50:60                Apple                 f4:0f:24:40:50:60   1671   527   10   ← 1155+516 q, 339+188 blk
+Google · 20:30               Google                a8:51:ab:10:20:30   1514   671   10
+Living Room TV               Samsung Electronics   f0:5c:77:11:22:33    967   350   10   ← renamed
+… (11 more) …
+14 devices        distinct_devices=14                              (two Apple folded into one)
+```
+Merge arithmetic verified exactly: 1155+516=1671 queries, 339+188=527 blocked, distinct_domains stays 10 (union). Invalid `merge(self,self)` → **HTTP 400**; `rename(9999)` → **HTTP 404**.
+
+### UI — PASS
+
+`npm run build` green (tsc + vite); the daemon serves the embedded device table (name click-to-rename, per-row "merge into…" select, live 3s refresh). Deferred at M2 (documented): automated DHCP/mDNS discovery and the Pi-hole `/api/network/devices` MAC/hostname join — the `name_dhcp`/`name_mdns` precedence tiers exist and are honored, just not yet auto-populated.
+
+### CI — green
+
+Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28610575066 — `build-test` pass (36s) + `docker-smoke` pass (2m4s) on PR #4.
+
+**M2 acceptance met:** the fixture's clients resolve to named devices per the precedence rules (before table); merge survives re-ingestion (keystone test + reopened-db live check); before/after device table captured from a real run above.

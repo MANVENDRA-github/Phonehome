@@ -6,6 +6,8 @@
 
 mod event;
 pub mod ingest;
+pub mod naming;
+pub mod oui;
 pub mod replay;
 
 pub use event::QueryEvent;

@@ -6,7 +6,7 @@ Read this first in every session. It exists so any AI coding agent (Claude Code,
 
 **Phonehome** — a self-hosted privacy radar for home networks. It ingests DNS query logs from Pi-hole v6 / AdGuard Home (never packet capture), attributes queries to named LAN devices, tags destinations against tracker blocklists + GeoIP + a company-entity map, and renders per-device privacy scorecards with weekly diffs plus a WebGPU globe of device→destination arcs. 100% local, zero telemetry, ships as one `docker compose up`.
 
-Current phase: **M1 (ingestion) done — next work item is SPEC.md M2 (device identity/registry).** Open follow-ups: live Pi-hole validation + a real anonymized fixture (D-009); local Docker blocked on machine virtualization (PROOF §M0).
+Current phase: **M2 (device identity) done — next work item is SPEC.md M3 (destination enrichment + scorecards + AdGuard adapter).** Open follow-ups: live Pi-hole validation + a real anonymized fixture (D-009); automated DHCP/mDNS discovery + Pi-hole network-device MAC join (deferred at M2); local Docker blocked on machine virtualization (PROOF §M0).
 
 ## Read order for context
 
@@ -56,6 +56,9 @@ PHONEHOME_FIXTURE=fixtures/household-01.jsonl cargo run -p phonehome-daemon   # 
 # PHONEHOME_PIHOLE_URL=http://pi.hole PHONEHOME_PIHOLE_PASSWORD=... [PHONEHOME_POLL_INTERVAL_SECS=15]
 # PHONEHOME_DB=data/phonehome.db (default; container sets /data/phonehome.db)
 curl localhost:8480/api/stats  # ingestion totals + per-source cursor state
+curl localhost:8480/api/devices                                                   # M2: named device list
+curl -XPOST localhost:8480/api/devices/rename -d '{"id":1,"name":"Living Room TV"}' -H content-type:application/json
+curl -XPOST localhost:8480/api/devices/merge  -d '{"source":2,"into":1}' -H content-type:application/json
 # regenerate the fixture (deterministic, D-009):
 cargo run -p phonehome-core --example gen_fixture > fixtures/household-01.jsonl
 ```

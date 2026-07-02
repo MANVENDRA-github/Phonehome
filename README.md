@@ -2,7 +2,7 @@
 
 **Meet everything your house talks to.** Phonehome is a self-hosted privacy radar for your home network: it reads the DNS logs you already have (Pi-hole, AdGuard Home), figures out *which device* asked for *what*, and shows you — on a live 3D globe and per-device scorecards — exactly where your smart TV, doorbell, and every other gadget phones home.
 
-> **Status: pre-v1 — M1 (ingestion) merged.** Data flows: the Pi-hole v6 adapter + fixture replayer ingest DNS queries into SQLite hourly rollups with exactly-once semantics (property-tested across crashes); `/api/stats` reports totals live. Evidence in [PROOF.md](PROOF.md). Next: [SPEC.md](SPEC.md) M2 — device identity. Star/watch to follow along.
+> **Status: pre-v1 — M2 (device identity) merged.** DNS queries now resolve to named devices: MAC → OUI vendor, name precedence (user > DHCP > mDNS > vendor), with rename + merge (merges survive re-ingestion). The Pi-hole v6 adapter + fixture replayer feed exactly-once SQLite rollups; `/api/devices` and `/api/stats` report live. Evidence in [PROOF.md](PROOF.md). Next: [SPEC.md](SPEC.md) M3 — enrichment + scorecards. Star/watch to follow along.
 
 <!-- HERO: 10-second GIF goes here at M4 — the globe firing arcs from "Samsung TV" to ad servers across the planet. PROOF rule: the GIF must render real data from a real network. -->
 

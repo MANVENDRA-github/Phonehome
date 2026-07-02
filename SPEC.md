@@ -19,7 +19,7 @@ Ground rules for every milestone:
 **Accept:** replayer run ingests the full fixture with zero loss/dup across a mid-run restart (property test); live Pi-hole poll shown working against a real instance (or, if no Pi-hole is reachable, a recorded-HTTP-fixture test plus an explicit PROOF note that live validation is pending).
 **Proof:** test output + row counts vs fixture line count; cursor-restart test output. PROOF.md §M1.
 
-## M2 — Device identity
+## M2 — Device identity ✅ (done 2026-07-02 — evidence: PROOF.md §M2)
 **Deliverable:** device registry (MAC/IP keying, OUI vendor lookup from bundled IEEE table, DHCP/mDNS name intake, naming precedence), rename + merge API, minimal device-list UI.
 **Accept:** fixture's clients resolve to named devices per the precedence rules; merge survives re-ingestion (no duplicate resurrection — regression test).
 **Proof:** before/after device table from a real run. PROOF.md §M2.
