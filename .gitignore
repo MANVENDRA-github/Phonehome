@@ -1,0 +1,13 @@
+# Rust
+/target/
+
+# UI
+ui/node_modules/
+ui/dist/
+
+# Runtime data (SQLite lives here in dev)
+/data/
+
+# Env & misc
+.env
+*.log

@@ -1,0 +1,12 @@
+services:
+  phonehome:
+    build: .
+    container_name: phonehome
+    ports:
+      - "8480:8480"
+    volumes:
+      - phonehome-data:/data
+    restart: unless-stopped
+
+volumes:
+  phonehome-data:

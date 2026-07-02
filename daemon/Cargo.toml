@@ -1,0 +1,19 @@
+[package]
+name = "phonehome-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Phonehome daemon: single binary serving the API and the embedded UI"
+
+[dependencies]
+axum = "0.8"
+mime_guess = "2"
+rust-embed = "8"
+serde_json = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -9,7 +9,7 @@ Ground rules for every milestone:
 
 ---
 
-## M0 — Scaffold
+## M0 — Scaffold ✅ (done 2026-07-02 — evidence: PROOF.md §M0)
 **Deliverable:** Rust workspace (`daemon/` binary crate + `core/` lib crate) and `ui/` (Vite + React + TS), CI (fmt + clippy + test + UI typecheck/build on push), `PROOF.md`, `.gitignore`, compose file that builds and starts the (empty) service.
 **Accept:** `cargo test` and `npm run build` green locally and in CI; `docker compose up` serves a "phonehome alive" page with the embedded UI.
 **Proof:** CI run link + pasted local command output in PROOF.md §M0.
