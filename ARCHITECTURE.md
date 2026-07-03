@@ -41,16 +41,15 @@ One Rust service (daemon + API + embedded static UI) plus a SQLite file. The bro
 - OUI lookup from a bundled curated table (`core/data/oui.csv`, `core::oui`) — same CSV shape as the IEEE registry so the full table drops in. `name_dhcp`/`name_mdns` columns exist and are honored by precedence; **automated DHCP/mDNS discovery is deferred** (documented follow-up), as is joining Pi-hole `/api/network/devices` for MAC+hostname.
 - Devices are an **overlay** (D-010): each raw device's `identity_key` = the rollup `client_key`. Rename sets `name_user`; merge sets `merged_into` (an alias pointing at the canonical device). Ingestion only upserts identity/last-seen — never `merged_into` or names — so re-discovery never resurrects a merged device. Device-level activity is folded at read time via `COALESCE(merged_into, id)`.
 
-### 2.3 Enrichment
-Runs per unique domain, cached in `destinations`:
-- **Tracker classification:** membership in oisd / StevenBlack lists (bundled snapshots; user-refreshable). Store which list(s) matched.
-- **GeoIP:** MaxMind GeoLite2-Country (user supplies license key for updates; bundled snapshot fallback) resolved against the domain's A/AAAA answer when the source provides it, else a lightweight lookup of the domain's current IP (local resolver, cacheable, off by default in strict-local mode).
-- **Entity mapping:** curated `entities.toml` in-repo mapping domain suffixes → owning company + category (ads/analytics/telemetry/CDN/first-party). Deliberately editable data, PR-friendly.
+### 2.3 Enrichment (implemented at M3, `core::enrich`)
+Pure and **offline** — no network, so it runs inside the ingestion transaction (D-005 intact). Each distinct domain is enriched once and cached in `destinations`:
+- **Entity + category:** curated `core/data/entities.toml` maps domain suffixes → owning company + category (`first_party` · `functional` · `cdn` · `telemetry` · `analytics` · `advertising`). Longest-suffix match wins, so specific hostnames override base-domain fallbacks. Deliberately editable data, PR-friendly.
+- **Tracker classification:** a destination `is_tracker` when its category is tracking (advertising/analytics/telemetry) **or** it appears in the bundled `core/data/trackers.txt` blocklist seed (oisd/StevenBlack shape — drop in the full list to widen). Unmapped domains resolve explicitly to `Category::Unknown` (SPEC M3 acceptance).
+- **Country:** comes from the entity map's ISO-2 field, **not** GeoIP (D-011 — no answer-IP in the log, MaxMind licensing, CDN-IP inaccuracy). Optional user-provided GeoLite2 for unmapped domains is a documented follow-up.
 
-### 2.4 Scorecard + diff engine
-- Weekly snapshot per device: distinct domains, tracker share, entity set, country set, query volume.
-- Score = weighted blend (weights are config, defaults set after the M3 real-household spike) — **always rendered with its inputs**; no unexplained numbers.
-- Diff view = set differences between snapshots ("+6 tracker domains: …"), the retention feature.
+### 2.4 Scorecard + diff engine (scorecard + snapshots at M3, `core::score`)
+- **Live scorecard** per device (`GET /api/devices/{id}/scorecard`): a 0–100 privacy-risk score (higher = more concerning), blended from four normalized components — tracker share (0.45), distinct tracker companies (0.25), country spread (0.15), chattiness/volume (0.15). Weights are PROVISIONAL (D-012) and live in one `ScoreWeights` struct. The `Scorecard` **always carries its component values, raw inputs, and the weights** — no unexplained number (SPEC M3). `blocked` is shown as context but excluded from the score.
+- **Weekly snapshots** (`snapshots` table, refreshed by a periodic idempotent job; `GET /api/snapshots`): per canonical device per ISO week — distinct/tracker domains, distinct entities/countries, volume, blocked, score. These persist the history the M6 week-over-week **diff** consumes ("+6 tracker domains: …"), the retention feature.
 
 ### 2.5 API + UI
 - **Axum** serving `/api/devices`, `/api/devices/:id/scorecard`, `/api/arcs?window=`, `/api/diffs`, and `/stream` (SSE: new enriched events for live globe updates). OpenAPI-documented from M1.
@@ -60,16 +59,18 @@ Runs per unique domain, cached in `destinations`:
 ## 3. Storage sketch (SQLite, WAL mode)
 
 ```sql
--- implemented at M1–M2 (schema_version 2):
+-- implemented at M1–M3 (schema_version 3):
 sources(id PRIMARY KEY, kind, cursor, last_ok_at)          -- base_url lives in env config until the M5 wizard
 query_rollups(source_id, client_key, domain, bucket_hour,  -- client_key = MAC else IP; stays the key (D-010)
               count, blocked_count)                        -- raw events roll up; no per-query retention (D-005)
 devices(id, identity_key UNIQUE, is_mac, mac, ip_hint,     -- overlay: identity_key = client_key (D-010)
         oui_vendor, name_user, name_dhcp, name_mdns,       -- names by precedence (core::naming)
         first_seen, last_seen, merged_into)                -- merged_into = alias -> canonical device
--- arriving with M3:
-destinations(domain PRIMARY KEY, entity, category, tracker_lists, country, resolved_ip, enriched_at)
-snapshots(device_id, week_start, distinct_domains, tracker_domains, entities_json, countries_json, volume, score)
+destinations(domain PRIMARY KEY, entity, category,         -- enriched once per domain (core::enrich)
+             country, is_tracker, on_blocklist, enriched_at) -- country from entity map, not GeoIP (D-011)
+snapshots(device_id, week_start, distinct_domains,         -- weekly per device; feeds the M6 diff
+          tracker_domains, distinct_entities, distinct_countries,
+          volume, blocked, score, computed_at, PRIMARY KEY (device_id, week_start))
 ```
 
 Raw `QueryEvent`s are transient: they update rollups + trigger enrichment, then drop. Privacy stance doubles as a scaling strategy — a year of a busy household stays comfortably in one SQLite file.
