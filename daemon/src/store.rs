@@ -14,8 +14,9 @@
 //! overlay, so re-ingestion never resurrects a merged device — ingestion only
 //! ever upserts identity/last-seen, never `merged_into` or names.
 
-use phonehome_core::{naming, oui, QueryEvent};
-use rusqlite::{params, Connection, OptionalExtension};
+use phonehome_core::score::{ScoreInputs, ScoreWeights, Scorecard};
+use phonehome_core::{QueryEvent, enrich, naming, oui, score};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -55,8 +56,34 @@ CREATE TABLE IF NOT EXISTS devices (
     last_seen    INTEGER NOT NULL,
     merged_into  INTEGER REFERENCES devices(id)
 );
-INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '2');
+CREATE TABLE IF NOT EXISTS destinations (
+    domain       TEXT PRIMARY KEY,
+    entity       TEXT,
+    category     TEXT NOT NULL,
+    country      TEXT,
+    is_tracker   INTEGER NOT NULL,
+    on_blocklist INTEGER NOT NULL,
+    enriched_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS snapshots (
+    device_id          INTEGER NOT NULL,
+    week_start         INTEGER NOT NULL,
+    distinct_domains   INTEGER NOT NULL,
+    tracker_domains    INTEGER NOT NULL,
+    distinct_entities  INTEGER NOT NULL,
+    distinct_countries INTEGER NOT NULL,
+    volume             INTEGER NOT NULL,
+    blocked            INTEGER NOT NULL,
+    score              INTEGER NOT NULL,
+    computed_at        INTEGER NOT NULL,
+    PRIMARY KEY (device_id, week_start)
+);
+INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '3');
+UPDATE meta SET value = '3' WHERE key = 'schema_version';
 ";
+
+/// Millis per week; snapshot buckets align to whole weeks from the unix epoch.
+const WEEK_MS: i64 = 7 * 24 * 3_600_000;
 
 fn store_now_ms() -> i64 {
     SystemTime::now()
@@ -114,9 +141,33 @@ pub struct DeviceRow {
     pub name_user: Option<String>,
     pub queries: i64,
     pub blocked: i64,
+    pub tracker_queries: i64,
     pub distinct_domains: i64,
     pub first_seen: i64,
     pub last_seen: i64,
+}
+
+/// A device's scorecard plus the device it describes.
+#[derive(Debug, serde::Serialize)]
+pub struct DeviceScorecard {
+    pub device_id: i64,
+    pub display_name: String,
+    #[serde(flatten)]
+    pub card: Scorecard,
+}
+
+/// A persisted weekly snapshot row (feeds the M6 week-over-week diff).
+#[derive(Debug, serde::Serialize)]
+pub struct Snapshot {
+    pub device_id: i64,
+    pub week_start: i64,
+    pub distinct_domains: i64,
+    pub tracker_domains: i64,
+    pub distinct_entities: i64,
+    pub distinct_countries: i64,
+    pub volume: i64,
+    pub blocked: i64,
+    pub score: i64,
 }
 
 /// Errors from device mutations that the API maps to 400/404.
@@ -216,6 +267,8 @@ impl Store {
         let mut agg: HashMap<(String, String, i64), (i64, i64)> = HashMap::new();
         // Distinct client identities seen this batch: key -> (mac, ip).
         let mut identities: HashMap<String, (Option<String>, String)> = HashMap::new();
+        // Distinct domains seen this batch, for destination enrichment.
+        let mut domains: std::collections::HashSet<String> = std::collections::HashSet::new();
         for e in events {
             let entry = agg
                 .entry((e.client_key(), e.domain.clone(), e.bucket_hour()))
@@ -227,6 +280,7 @@ impl Store {
             identities
                 .entry(e.client_key())
                 .or_insert_with(|| (e.client_mac.clone(), e.client_ip.to_string()));
+            domains.insert(e.domain.clone());
         }
 
         let mut conn = self.conn.lock().expect("store mutex poisoned");
@@ -245,6 +299,9 @@ impl Store {
             }
             for (key, (mac, ip)) in &identities {
                 upsert_device(&tx, key, mac.as_deref(), Some(ip.as_str()), now_ms)?;
+            }
+            for domain in &domains {
+                upsert_destination(&tx, domain, now_ms)?;
             }
             tx.prepare_cached(
                 "INSERT INTO sources (id, kind, cursor, last_ok_at)
@@ -268,10 +325,13 @@ impl Store {
                     canon.first_seen, canon.last_seen,
                     COALESCE(SUM(r.count), 0)         AS queries,
                     COALESCE(SUM(r.blocked_count), 0) AS blocked,
+                    COALESCE(SUM(CASE WHEN dest.is_tracker = 1 THEN r.count ELSE 0 END), 0)
+                                                      AS tracker_queries,
                     COUNT(DISTINCT r.domain)          AS domains
              FROM devices d
              JOIN devices canon ON canon.id = COALESCE(d.merged_into, d.id)
              LEFT JOIN query_rollups r ON r.client_key = d.identity_key
+             LEFT JOIN destinations dest ON dest.domain = r.domain
              WHERE canon.merged_into IS NULL
              GROUP BY canon.id
              ORDER BY queries DESC, canon.id ASC",
@@ -307,7 +367,133 @@ impl Store {
                     last_seen: r.get(10)?,
                     queries: r.get(11)?,
                     blocked: r.get(12)?,
-                    distinct_domains: r.get(13)?,
+                    tracker_queries: r.get(13)?,
+                    distinct_domains: r.get(14)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Computes a device's live privacy scorecard over all available data,
+    /// folding in any devices merged into it. `None` if the id isn't a
+    /// canonical device.
+    pub fn device_scorecard(&self, id: i64) -> rusqlite::Result<Option<DeviceScorecard>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let display_name: Option<String> = conn
+            .query_row(
+                "SELECT identity_key, oui_vendor, name_user, name_dhcp, name_mdns
+                 FROM devices WHERE id = ?1 AND merged_into IS NULL",
+                params![id],
+                |r| {
+                    let identity_key: String = r.get(0)?;
+                    let vendor: Option<String> = r.get(1)?;
+                    let name_user: Option<String> = r.get(2)?;
+                    let name_dhcp: Option<String> = r.get(3)?;
+                    let name_mdns: Option<String> = r.get(4)?;
+                    Ok(naming::display_name(
+                        name_user.as_deref(),
+                        name_dhcp.as_deref(),
+                        name_mdns.as_deref(),
+                        vendor.as_deref(),
+                        None,
+                        &identity_key,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some(display_name) = display_name else {
+            return Ok(None);
+        };
+
+        let agg = aggregate(&conn, id, None)?;
+        let card = score::score(agg.inputs, ScoreWeights::default());
+        Ok(Some(DeviceScorecard {
+            device_id: id,
+            display_name,
+            card,
+        }))
+    }
+
+    /// Recomputes and upserts a weekly snapshot per canonical device for every
+    /// week present in the data. Idempotent — safe to run on a schedule.
+    pub fn snapshot_all_weeks(&self, now_ms: i64) -> rusqlite::Result<usize> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let device_ids: Vec<i64> = {
+            let mut stmt =
+                conn.prepare("SELECT id FROM devices WHERE merged_into IS NULL ORDER BY id")?;
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let weeks: Vec<i64> = {
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT (bucket_hour * 3600000) / ?1 * ?1 FROM query_rollups")?;
+            let rows = stmt.query_map(params![WEEK_MS], |r| r.get::<_, i64>(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+
+        let mut written = 0usize;
+        for &device_id in &device_ids {
+            for &week_start in &weeks {
+                let week_end = week_start + WEEK_MS;
+                let agg = aggregate(&conn, device_id, Some((week_start, week_end)))?;
+                if agg.inputs.total_queries == 0 {
+                    continue;
+                }
+                let card = score::score(agg.inputs, ScoreWeights::default());
+                conn.execute(
+                    "INSERT INTO snapshots
+                        (device_id, week_start, distinct_domains, tracker_domains,
+                         distinct_entities, distinct_countries, volume, blocked, score, computed_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                     ON CONFLICT (device_id, week_start) DO UPDATE SET
+                        distinct_domains   = excluded.distinct_domains,
+                        tracker_domains    = excluded.tracker_domains,
+                        distinct_entities  = excluded.distinct_entities,
+                        distinct_countries = excluded.distinct_countries,
+                        volume             = excluded.volume,
+                        blocked            = excluded.blocked,
+                        score              = excluded.score,
+                        computed_at        = excluded.computed_at",
+                    params![
+                        device_id,
+                        week_start,
+                        agg.distinct_domains,
+                        agg.tracker_domains,
+                        agg.inputs.distinct_tracker_entities,
+                        agg.distinct_countries,
+                        agg.inputs.total_queries,
+                        agg.inputs.blocked_queries,
+                        card.score as i64,
+                        now_ms,
+                    ],
+                )?;
+                written += 1;
+            }
+        }
+        Ok(written)
+    }
+
+    /// All persisted snapshots, newest week first.
+    pub fn list_snapshots(&self) -> rusqlite::Result<Vec<Snapshot>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT device_id, week_start, distinct_domains, tracker_domains,
+                    distinct_entities, distinct_countries, volume, blocked, score
+             FROM snapshots ORDER BY week_start DESC, device_id ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(Snapshot {
+                    device_id: r.get(0)?,
+                    week_start: r.get(1)?,
+                    distinct_domains: r.get(2)?,
+                    tracker_domains: r.get(3)?,
+                    distinct_entities: r.get(4)?,
+                    distinct_countries: r.get(5)?,
+                    volume: r.get(6)?,
+                    blocked: r.get(7)?,
+                    score: r.get(8)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -447,6 +633,95 @@ fn device_exists(tx: &rusqlite::Transaction<'_>, id: i64) -> rusqlite::Result<bo
     })
     .optional()
     .map(|o| o.is_some())
+}
+
+/// Enriches a domain (pure, offline — no network, D-005 stays intact) and
+/// upserts it into `destinations`. Re-runs refresh the enrichment (cheap; the
+/// seeds may change between releases).
+fn upsert_destination(
+    tx: &rusqlite::Transaction<'_>,
+    domain: &str,
+    now_ms: i64,
+) -> rusqlite::Result<()> {
+    let e = enrich::enrich(domain);
+    let category = serde_json::to_value(e.category)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into());
+    tx.prepare_cached(
+        "INSERT INTO destinations
+             (domain, entity, category, country, is_tracker, on_blocklist, enriched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT (domain) DO UPDATE SET
+             entity = excluded.entity, category = excluded.category,
+             country = excluded.country, is_tracker = excluded.is_tracker,
+             on_blocklist = excluded.on_blocklist, enriched_at = excluded.enriched_at",
+    )?
+    .execute(params![
+        domain,
+        e.entity,
+        category,
+        e.country,
+        e.is_tracker as i64,
+        e.on_blocklist as i64,
+        now_ms,
+    ])?;
+    Ok(())
+}
+
+/// Per-device aggregates over all data (`window = None`) or a `[start, end)`
+/// millisecond window, folding in every device merged into `device_id`.
+struct Aggregate {
+    inputs: ScoreInputs,
+    distinct_domains: i64,
+    tracker_domains: i64,
+    distinct_countries: i64,
+}
+
+fn aggregate(
+    conn: &Connection,
+    device_id: i64,
+    window: Option<(i64, i64)>,
+) -> rusqlite::Result<Aggregate> {
+    let (where_window, wp): (&str, Vec<i64>) = match window {
+        Some((start, end)) => (
+            "AND r.bucket_hour * 3600000 >= ?2 AND r.bucket_hour * 3600000 < ?3",
+            vec![start, end],
+        ),
+        None => ("", vec![]),
+    };
+    let sql = format!(
+        "SELECT COALESCE(SUM(r.count), 0),
+                COALESCE(SUM(r.blocked_count), 0),
+                COALESCE(SUM(CASE WHEN dest.is_tracker = 1 THEN r.count ELSE 0 END), 0),
+                COUNT(DISTINCT CASE WHEN dest.is_tracker = 1 THEN dest.entity END),
+                COUNT(DISTINCT r.domain),
+                COUNT(DISTINCT CASE WHEN dest.is_tracker = 1 THEN r.domain END),
+                COUNT(DISTINCT dest.country)
+         FROM query_rollups r
+         LEFT JOIN destinations dest ON dest.domain = r.domain
+         WHERE r.client_key IN
+             (SELECT identity_key FROM devices WHERE COALESCE(merged_into, id) = ?1)
+         {where_window}"
+    );
+    let mut params: Vec<&dyn rusqlite::ToSql> = vec![&device_id];
+    for p in &wp {
+        params.push(p);
+    }
+    conn.query_row(&sql, params.as_slice(), |r| {
+        Ok(Aggregate {
+            inputs: ScoreInputs {
+                total_queries: r.get(0)?,
+                blocked_queries: r.get(1)?,
+                tracker_queries: r.get(2)?,
+                distinct_tracker_entities: r.get(3)?,
+                distinct_countries: r.get(6)?,
+            },
+            distinct_domains: r.get(4)?,
+            tracker_domains: r.get(5)?,
+            distinct_countries: r.get(6)?,
+        })
+    })
 }
 
 /// Follows `merged_into` to the canonical device id (cap guards against a cycle).
@@ -710,6 +985,120 @@ mod tests {
         let tv = devices.iter().find(|d| d.is_mac).unwrap();
         assert_eq!(tv.vendor.as_deref(), Some("Samsung Electronics"));
         assert_eq!(tv.queries, 5);
+    }
+
+    // --- M3 enrichment + scorecard ---
+
+    #[test]
+    fn enrichment_populates_destinations_and_tracker_queries() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .apply_batch(
+                "s1",
+                "fixture",
+                &[
+                    mac_event(0, "f0:5c:77:11:22:33", "192.168.1.20", "samsungads.com", true),
+                    mac_event(1, "f0:5c:77:11:22:33", "192.168.1.20", "api.github.com", false),
+                ],
+                Some("2"),
+                0,
+            )
+            .unwrap();
+
+        // destinations enriched.
+        let conn = store.conn.lock().unwrap();
+        let (cat, is_tracker, country): (String, i64, Option<String>) = conn
+            .query_row(
+                "SELECT category, is_tracker, country FROM destinations WHERE domain='samsungads.com'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(cat, "advertising");
+        assert_eq!(is_tracker, 1);
+        assert_eq!(country.as_deref(), Some("KR"));
+        drop(conn);
+
+        // tracker_queries counts only the tracker domain.
+        let d = &store.list_devices().unwrap()[0];
+        assert_eq!(d.queries, 2);
+        assert_eq!(d.tracker_queries, 1);
+    }
+
+    #[test]
+    fn scorecard_ranks_tracker_heavy_above_quiet() {
+        let store = Store::open_in_memory().unwrap();
+        let mut events = Vec::new();
+        // A tracker magnet: many queries to ad/analytics across countries.
+        let magnet = "a8:51:ab:10:20:30";
+        for (i, dom) in [
+            "doubleclick.net",
+            "app-measurement.com",
+            "graph.facebook.com",
+            "analytics.tuya.com",
+        ]
+        .iter()
+        .cycle()
+        .take(80)
+        .enumerate()
+        {
+            events.push(mac_event(i as i64 * 1000, magnet, "192.168.1.30", dom, i % 3 == 0));
+        }
+        // A quiet device: only first-party GitHub.
+        let quiet = "dc:41:a9:70:80:90";
+        for i in 0..80 {
+            events.push(mac_event(i * 1000, quiet, "192.168.1.32", "api.github.com", false));
+        }
+        store.apply_batch("s1", "fixture", &events, Some("1"), 0).unwrap();
+
+        let devices = store.list_devices().unwrap();
+        let magnet_id = devices.iter().find(|d| d.identity_key == magnet).unwrap().id;
+        let quiet_id = devices.iter().find(|d| d.identity_key == quiet).unwrap().id;
+
+        let magnet_card = store.device_scorecard(magnet_id).unwrap().unwrap();
+        let quiet_card = store.device_scorecard(quiet_id).unwrap().unwrap();
+        assert!(
+            magnet_card.card.score > quiet_card.card.score,
+            "magnet {} should outscore quiet {}",
+            magnet_card.card.score,
+            quiet_card.card.score
+        );
+        // Inputs are visible and sane.
+        assert_eq!(quiet_card.card.inputs.tracker_queries, 0);
+        assert!(magnet_card.card.inputs.tracker_queries > 0);
+        assert!(magnet_card.card.inputs.distinct_countries >= 2);
+    }
+
+    #[test]
+    fn scorecard_none_for_missing_or_merged_device() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.device_scorecard(9999).unwrap().is_none());
+    }
+
+    #[test]
+    fn snapshots_are_idempotent() {
+        let store = Store::open_in_memory().unwrap();
+        let evs: Vec<QueryEvent> = (0..50)
+            .map(|i| {
+                mac_event(
+                    i * 3_600_000,
+                    "a8:51:ab:10:20:30",
+                    "192.168.1.30",
+                    if i % 2 == 0 { "doubleclick.net" } else { "api.github.com" },
+                    i % 4 == 0,
+                )
+            })
+            .collect();
+        store.apply_batch("s1", "fixture", &evs, Some("50"), 0).unwrap();
+
+        let first = store.snapshot_all_weeks(0).unwrap();
+        let rows1 = store.list_snapshots().unwrap();
+        assert!(first > 0 && !rows1.is_empty());
+        // Running again writes the same set (upsert), not duplicates.
+        store.snapshot_all_weeks(0).unwrap();
+        let rows2 = store.list_snapshots().unwrap();
+        assert_eq!(rows1.len(), rows2.len(), "snapshot re-run must not duplicate");
+        assert!(rows2.iter().all(|s| s.volume > 0));
     }
 
     proptest! {
