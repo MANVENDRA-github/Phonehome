@@ -204,6 +204,9 @@ mod tests {
 
     #[test]
     fn trailing_dot_and_case_normalized() {
-        assert_eq!(enrich("SAMSUNGADS.COM.").entity.as_deref(), Some("Samsung Ads"));
+        assert_eq!(
+            enrich("SAMSUNGADS.COM.").entity.as_deref(),
+            Some("Samsung Ads")
+        );
     }
 }
