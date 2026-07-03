@@ -249,6 +249,6 @@ No live AdGuard on this network (same posture as the pending live Pi-hole). The 
 
 ### CI — green
 
-Run: (link added post-push) `build-test` + `docker-smoke` on PR #5.
+Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28673147573 — `build-test` pass (56s) + `docker-smoke` pass (2m12s) on PR #5.
 
 **M3 acceptance met:** every fixture domain enriched, zero `unknown` (coverage above); scorecard renders with all its inputs visible (live table + endpoint); weights sanity-checked on the fixture and marked provisional (D-012, real-household tuning pending). AdGuard proves the source-agnostic boundary. GeoIP deferred to the entity-map country per D-011.
