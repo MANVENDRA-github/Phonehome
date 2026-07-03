@@ -1,0 +1,419 @@
+# Domain → owning entity, category, and country. CURATED SEED (like oui.csv).
+#
+# `suffix` matches a domain when it equals the domain or is a dot-suffix of it;
+# the LONGEST matching suffix wins, so specific hostnames override base-domain
+# fallbacks. `category` ∈ first_party | functional | cdn | telemetry | analytics
+# | advertising. A destination is a tracker when category ∈ {advertising,
+# analytics, telemetry} or it appears in trackers.txt.
+#
+# `country` is the entity's hosting/HQ country (ISO-3166 alpha-2), used for the
+# scorecard's country-spread input and the M4 globe — see DECISIONS.md D-011
+# (country comes from this map, NOT bundled GeoIP). Values here cover the dev
+# fixture's 75 domains (D-009) plus common bases; drop in a fuller map to extend.
+
+# --- Samsung (smart TV) ---
+[[entity]]
+suffix = "samsungads.com"
+name = "Samsung Ads"
+category = "advertising"
+country = "KR"
+[[entity]]
+suffix = "ads.samsung.com"
+name = "Samsung Ads"
+category = "advertising"
+country = "KR"
+[[entity]]
+suffix = "log-ingestion.samsungacr.com"
+name = "Samsung ACR"
+category = "analytics"
+country = "KR"
+[[entity]]
+suffix = "acr0.samsungcloudsolution.com"
+name = "Samsung ACR"
+category = "analytics"
+country = "KR"
+[[entity]]
+suffix = "api.samsungcloudsolution.com"
+name = "Samsung"
+category = "functional"
+country = "KR"
+[[entity]]
+suffix = "cdn.samsungcloudsolution.net"
+name = "Samsung"
+category = "cdn"
+country = "KR"
+
+# --- Netflix / YouTube (streaming on the TV) ---
+[[entity]]
+suffix = "netflix.com"
+name = "Netflix"
+category = "first_party"
+country = "US"
+[[entity]]
+suffix = "nflxvideo.net"
+name = "Netflix"
+category = "cdn"
+country = "US"
+[[entity]]
+suffix = "youtube.com"
+name = "YouTube (Google)"
+category = "first_party"
+country = "US"
+[[entity]]
+suffix = "googlevideo.com"
+name = "YouTube (Google)"
+category = "cdn"
+country = "US"
+
+# --- Ring doorbell (Amazon) ---
+[[entity]]
+suffix = "app-analytics.ring.com"
+name = "Ring (Amazon)"
+category = "analytics"
+country = "US"
+[[entity]]
+suffix = "api.ring.com"
+name = "Ring (Amazon)"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "fw.ring.com"
+name = "Ring (Amazon)"
+category = "functional"
+country = "US"
+
+# --- Amazon (Echo / Alexa / device metrics) ---
+[[entity]]
+suffix = "device-metrics-us.amazon.com"
+name = "Amazon"
+category = "telemetry"
+country = "US"
+[[entity]]
+suffix = "device-metrics-us-2.amazon.com"
+name = "Amazon"
+category = "telemetry"
+country = "US"
+[[entity]]
+suffix = "unagi-na.amazon.com"
+name = "Amazon"
+category = "telemetry"
+country = "US"
+[[entity]]
+suffix = "avs-alexa-4-na.amazon.com"
+name = "Amazon Alexa"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "api.amazonalexa.com"
+name = "Amazon Alexa"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "ntp-g7g.amazon.com"
+name = "Amazon"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "kinesis.us-east-1.amazonaws.com"
+name = "Amazon AWS"
+category = "functional"
+country = "US"
+
+# --- iRobot (vacuum) ---
+[[entity]]
+suffix = "logs.iot.irobotapi.com"
+name = "iRobot"
+category = "telemetry"
+country = "US"
+[[entity]]
+suffix = "prod-eu.iot.irobotapi.com"
+name = "iRobot"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "mqtt-prod.iot.irobotapi.com"
+name = "iRobot"
+category = "functional"
+country = "US"
+
+# --- Google Nest (thermostat) ---
+[[entity]]
+suffix = "logsink.devices.nest.com"
+name = "Google Nest"
+category = "telemetry"
+country = "US"
+[[entity]]
+suffix = "weather.nest.com"
+name = "Google Nest"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "nexus.nestlabs.com"
+name = "Google Nest"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "time.nestlabs.com"
+name = "Google Nest"
+category = "functional"
+country = "US"
+
+# --- Phone: Meta / Google / Spotify / Signal ---
+[[entity]]
+suffix = "graph.facebook.com"
+name = "Meta"
+category = "analytics"
+country = "US"
+[[entity]]
+suffix = "graph.instagram.com"
+name = "Meta (Instagram)"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "i.instagram.com"
+name = "Meta (Instagram)"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "app-measurement.com"
+name = "Google Firebase"
+category = "analytics"
+country = "US"
+[[entity]]
+suffix = "firebaselogging-pa.googleapis.com"
+name = "Google Firebase"
+category = "analytics"
+country = "US"
+[[entity]]
+suffix = "mtalk.google.com"
+name = "Google"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "api.spotify.com"
+name = "Spotify"
+category = "first_party"
+country = "SE"
+[[entity]]
+suffix = "chat.signal.org"
+name = "Signal"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "googleads.g.doubleclick.net"
+name = "Google Ads"
+category = "advertising"
+country = "US"
+[[entity]]
+suffix = "doubleclick.net"
+name = "Google DoubleClick"
+category = "advertising"
+country = "US"
+
+# --- Apple (phones) ---
+[[entity]]
+suffix = "api-adservices.apple.com"
+name = "Apple Ads"
+category = "advertising"
+country = "US"
+[[entity]]
+suffix = "xp.apple.com"
+name = "Apple"
+category = "analytics"
+country = "US"
+[[entity]]
+suffix = "smoot.apple.com"
+name = "Apple"
+category = "analytics"
+country = "US"
+[[entity]]
+suffix = "gateway.icloud.com"
+name = "Apple iCloud"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "mask.icloud.com"
+name = "Apple Private Relay"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "icloud-content.com"
+name = "Apple iCloud"
+category = "cdn"
+country = "US"
+[[entity]]
+suffix = "configuration.ls.apple.com"
+name = "Apple"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "weather-data.apple.com"
+name = "Apple"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "courier.push.apple.com"
+name = "Apple Push"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "ocsp2.apple.com"
+name = "Apple"
+category = "functional"
+country = "US"
+
+# --- Microsoft (Windows laptop) ---
+[[entity]]
+suffix = "self.events.data.microsoft.com"
+name = "Microsoft"
+category = "telemetry"
+country = "US"
+[[entity]]
+suffix = "v10.events.data.microsoft.com"
+name = "Microsoft"
+category = "telemetry"
+country = "US"
+[[entity]]
+suffix = "settings-win.data.microsoft.com"
+name = "Microsoft"
+category = "telemetry"
+country = "US"
+[[entity]]
+suffix = "marketplace.visualstudio.com"
+name = "Microsoft"
+category = "functional"
+country = "US"
+
+# --- Dev tooling (laptop) ---
+[[entity]]
+suffix = "api.github.com"
+name = "GitHub"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "github.com"
+name = "GitHub"
+category = "first_party"
+country = "US"
+[[entity]]
+suffix = "update.googleapis.com"
+name = "Google"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "crates.io"
+name = "Rust Foundation"
+category = "first_party"
+country = "US"
+[[entity]]
+suffix = "static.rust-lang.org"
+name = "Rust Foundation"
+category = "cdn"
+country = "US"
+
+# --- Nintendo (console) ---
+[[entity]]
+suffix = "telemetry.nintendo.com"
+name = "Nintendo"
+category = "telemetry"
+country = "JP"
+[[entity]]
+suffix = "accounts.nintendo.com"
+name = "Nintendo"
+category = "functional"
+country = "JP"
+[[entity]]
+suffix = "conntest.nintendowifi.net"
+name = "Nintendo"
+category = "functional"
+country = "JP"
+[[entity]]
+suffix = "atum.hac.lp1.d4c.nintendo.net"
+name = "Nintendo"
+category = "cdn"
+country = "JP"
+
+# --- Epson (printer) ---
+[[entity]]
+suffix = "gdmf.epson.com"
+name = "Epson"
+category = "telemetry"
+country = "JP"
+[[entity]]
+suffix = "firmware.epson.com"
+name = "Epson"
+category = "functional"
+country = "JP"
+[[entity]]
+suffix = "epson.com"
+name = "Epson"
+category = "first_party"
+country = "JP"
+
+# --- Belkin Wemo (smart plug) ---
+[[entity]]
+suffix = "heartbeat.xwemo.com"
+name = "Belkin Wemo"
+category = "telemetry"
+country = "US"
+[[entity]]
+suffix = "api.wemo.com"
+name = "Belkin Wemo"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "nat.xwemo.com"
+name = "Belkin Wemo"
+category = "functional"
+country = "US"
+
+# --- TP-Link (smart plug) ---
+[[entity]]
+suffix = "use1-api.tplinkra.com"
+name = "TP-Link"
+category = "telemetry"
+country = "CN"
+[[entity]]
+suffix = "devs.tplinkcloud.com"
+name = "TP-Link"
+category = "functional"
+country = "CN"
+[[entity]]
+suffix = "ipcserv.tplinkcloud.com"
+name = "TP-Link"
+category = "functional"
+country = "CN"
+
+# --- Tuya (smart plug) ---
+[[entity]]
+suffix = "analytics.tuya.com"
+name = "Tuya"
+category = "analytics"
+country = "CN"
+[[entity]]
+suffix = "a2.tuyaeu.com"
+name = "Tuya"
+category = "functional"
+country = "CN"
+[[entity]]
+suffix = "m2.tuyaeu.com"
+name = "Tuya"
+category = "functional"
+country = "CN"
+[[entity]]
+suffix = "eu-central-1.aws.data.mongodb-api.com"
+name = "MongoDB Atlas"
+category = "functional"
+country = "US"
+
+# --- MAC-less Android client ---
+[[entity]]
+suffix = "connectivitycheck.gstatic.com"
+name = "Google"
+category = "functional"
+country = "US"
+[[entity]]
+suffix = "android.apis.google.com"
+name = "Google"
+category = "functional"
+country = "US"
