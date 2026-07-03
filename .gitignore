@@ -5,6 +5,11 @@
 ui/node_modules/
 ui/dist/
 
+# Playwright (raw runs; PROOF.md carries the summarized numbers)
+ui/e2e-results/
+ui/playwright-report/
+ui/test-results/
+
 # Runtime data (SQLite lives here in dev)
 /data/
 

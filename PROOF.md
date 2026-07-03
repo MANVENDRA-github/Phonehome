@@ -252,3 +252,119 @@ No live AdGuard on this network (same posture as the pending live Pi-hole). The 
 Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28673147573 — `build-test` pass (56s) + `docker-smoke` pass (2m12s) on PR #5.
 
 **M3 acceptance met:** every fixture domain enriched, zero `unknown` (coverage above); scorecard renders with all its inputs visible (live table + endpoint); weights sanity-checked on the fixture and marked provisional (D-012, real-household tuning pending). AdGuard proves the source-agnostic boundary. GeoIP deferred to the entity-map country per D-011.
+
+---
+
+## §M4 — The globe (2026-07-04)
+
+### Tests — PASS (96 Rust + 14 vitest + 3 Playwright, 0 failures)
+
+```
+cargo test        30 core + 46 daemon + 20 integration  — 0 failures
+                  new at M4: arcs group-by-country + merged-device fold, window
+                  boundary (inclusive start / exclusive end), unmapped disclosure,
+                  arc_domains ordering+enrichment, domain_rollups buckets,
+                  apply_batch pulses (enriched, canonical after merge), router
+                  tests for /api/arcs /arcs/domains /rollups /config + an SSE
+                  body-frame assertion; replayer e2e asserts pulses cover all
+                  fixture events exactly once across a restart
+npm test          14 vitest — globe math conventions (lat/lon axes, slerp,
+                  altitude profile) + centroid coverage of every entity country
+npm run e2e       3 Playwright smoke (chromium) — 3 passed (11.2s):
+  ✓ globe renders fixture arcs, provenance badge, and labeled devices
+  ✓ arc click-through reaches raw rollup data in two clicks
+  ✓ device table + scorecard render fixture values; unmapped traffic disclosed
+```
+`cargo fmt --check` clean; `cargo clippy --all-targets -- -D warnings` clean.
+
+### Widened fixture (D-009 update, in-milestone)
+
+Regenerated deterministically for globe-worthy geography (independently recomputed
+from the committed JSONL):
+```
+7363 events · 18 devices · 93 distinct domains · 2329 blocked
+15 destination countries: US KR JP CN SE FR SG RU IN DE NL TW AU CH GB
+29 device→country arcs at full-history volume
+1 deliberately unmapped domain (pool.ntp.org) → 31 queries reported via
+  unmapped_queries — the explicit-unknown path is exercised end to end
+```
+
+### Click-through — ≤2 clicks to raw data (SPEC M4 acceptance)
+
+Live headless-chromium run against the daemon replaying the fixture:
+arc click → drill panel (device → country breadcrumb, 6 domains with
+entity/category/tracker badges/blocked counts) → domain click → **111 raw
+hourly rollup buckets** (the rawest data retained, D-005). Also asserted on
+every CI run by `ui/e2e/smoke.spec.ts`.
+
+### Perf — measured frame times on named hardware (SPEC M4 proof)
+
+Protocol (`ui/e2e/perf.spec.ts`, @perf): headed Chromium 149 (Playwright 1.61.1),
+1280×720 viewport, dpr 1, camera auto-rotating (worst-case overdraw); per cell:
+10 s warm-up → reset stats → 30 s measure; GPU selected per run via Windows
+per-app GPU preference and **verified from the WebGPU adapter info captured in
+the run JSON**. Machine: i9-14900HX laptop, Windows 11 Home (26200), 240 Hz
+internal display — frame rates are vsync-capped at ~240 fps; the load-bearing
+numbers are the frame-time percentiles. Pass line for "smooth": p95 ≤ 16.7 ms.
+
+**NVIDIA GeForce RTX 4070 Laptop GPU** (adapter: `nvidia / lovelace`) — discrete:
+
+| arcs | backend | fps | avg ms | p50 | p95 | p99 |
+|---|---|---|---|---|---|---|
+| fixture (29) | webgpu | 238.9 | 4.19 | 4.20 | 4.30 | 4.40 |
+| 2,500 | webgpu | 240.0 | 4.17 | 4.20 | 4.30 | 4.40 |
+| 5,000 | webgpu | 239.6 | 4.17 | 4.20 | 4.30 | 4.40 |
+| **10,000** | **webgpu** | **239.8** | **4.17** | **4.20** | **4.30** | **4.40** |
+| fixture (29) | webgl | 238.7 | 4.19 | 4.20 | 4.30 | 4.40 |
+| 2,500 | webgl | 240.0 | 4.17 | 4.20 | 4.30 | 4.40 |
+| 5,000 | webgl | 239.7 | 4.17 | 4.20 | 4.30 | 4.40 |
+| 10,000 | webgl | 239.7 | 4.17 | 4.20 | 4.30 | 4.40 |
+
+**Intel UHD Graphics** (adapter: `intel / gen-12lp`, the i9-14900HX iGPU) — integrated:
+
+| arcs | backend | fps | avg ms | p50 | p95 | p99 |
+|---|---|---|---|---|---|---|
+| fixture (29) | webgpu | 237.7 | 4.21 | 4.20 | 4.30 | 5.00 |
+| 2,500 | webgpu | 238.7 | 4.19 | 4.20 | 4.30 | 4.40 |
+| 5,000 | webgpu | 237.0 | 4.22 | 4.20 | 4.30 | 8.20 |
+| **10,000** | **webgpu** | **237.2** | **4.22** | **4.20** | **4.30** | **4.70** |
+| fixture (29) | webgl | 235.0 | 4.26 | 4.20 | 4.30 | 8.30 |
+| 2,500 | webgl | 153.9 | 6.50 | 8.10 | 8.90 | 12.60 |
+| 5,000 | webgl | 91.4 | 10.94 | 12.40 | 13.20 | 17.60 |
+| 10,000 | webgl | 53.6 | 18.65 | 17.00 | 25.10 | 37.60 |
+
+**Acceptance read-out, stated precisely:** the ≥10k-arc target is met on
+integrated graphics via the primary WebGPU path (p95 4.30 ms — vsync-limited,
+not GPU-limited). The WebGL2 *fallback* on the iGPU is smooth at fixture volume
+(p95 4.30 ms) and degrades gracefully under stress (53.6 fps / p95 25.1 ms at
+10k arcs — interactive, but above the 16.7 ms smooth line; disclosed, not
+claimed). On the discrete GPU both backends are vsync-flat at every level.
+
+### Hero GIF — docs/hero.gif (the launch asset)
+
+Recorded via the Playwright harness (`npm run hero` → `@hero` spec →
+ffmpeg palettegen): **10 s · 880px · 12 fps · 6.19 MB**, real daemon replaying
+the committed fixture on a fresh DB, hero choreography cycling labeled devices
+(vendor · MAC-suffix callouts) over a worldwide arc starburst from the home
+origin. Provenance per D-008/D-009:
+- The in-page **“replayed fixture — synthetic data” badge is in every frame**
+  (it renders whenever a fixture source is configured — media honesty is
+  structural, not an editing step). The D-009 real-capture follow-up stays open.
+- Home origin is a **city-level** coordinate (Bengaluru 12.97, 77.59), not an
+  address (D-013).
+- Recorded on the **WebGL2 fallback** (`?gl=1`): headed-WebGPU canvases don’t
+  composite into Chromium’s CDP screencast (they capture black — verified by
+  A/B screenshots); the fallback is visually identical and its fps was measured
+  separately above. An `.mp4` sibling ships alongside.
+
+### CI — green
+
+Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28684048370 — on PR #8 (the full M4 stack #6→#7→#8): `build-test` incl. vitest pass (50s) · `playwright-smoke` pass (1m21s — the globe smoke incl. the 2-click drill-down, on SwiftShader WebGL) · `docker-smoke` pass (2m29s).
+
+**M4 acceptance met:** instanced WebGPU globe with WebGL fallback renders the
+fixture's device→country arcs with tracker coloring, device filter, and SSE
+live pulses; click-through reaches raw rollup data in 2 clicks (asserted in CI);
+≥10k visible arcs measured smooth on integrated graphics via WebGPU (frame-time
+tables above, hardware named from adapter info); the 10-second hero GIF exists,
+recorded through the Playwright harness from a real daemon run with the fixture
+label in-frame.

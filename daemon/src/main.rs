@@ -262,12 +262,16 @@ async fn stream(
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.pulses.subscribe();
     let events = BroadcastStream::new(rx).filter_map(|item| {
-        item.ok().map(|pulse| {
-            Ok(Event::default()
-                .event("pulse")
-                .json_data(&pulse)
-                .unwrap_or_default())
-        })
+        // Lagged recv errors drop silently (pulses are hints); a serialization
+        // failure is a bug worth a trace, not a blank frame on the wire.
+        let pulse = item.ok()?;
+        match Event::default().event("pulse").json_data(&pulse) {
+            Ok(event) => Some(Ok(event)),
+            Err(e) => {
+                tracing::warn!(error = %e, "pulse serialization failed; frame dropped");
+                None
+            }
+        }
     });
     Sse::new(events).keep_alive(KeepAlive::default())
 }

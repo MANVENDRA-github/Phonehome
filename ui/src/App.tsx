@@ -127,12 +127,65 @@ export default function App() {
       scene,
       getDevices: () =>
         devicesRef.current.map((d) => ({ id: d.id, name: d.display_name })),
-      setFilter,
       setCallout: setHeroCallout,
     });
   }, [params.hero, scene]);
 
   const arcRows = arcs?.arcs ?? [];
+
+  const globeEl = (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center text-xs text-slate-500">
+          loading globe…
+        </div>
+      }
+    >
+      <GlobeCanvas
+        arcs={arcRows}
+        home={home}
+        filter={filter}
+        stress={params.stress}
+        subscribePulse={sse.subscribe}
+        onArcClick={(arc) =>
+          setDrill(
+            arc
+              ? {
+                  device_id: arc.device_id,
+                  device_name: arc.device_name,
+                  country: arc.country,
+                }
+              : null,
+          )
+        }
+        onUnknownPulse={scheduleRefresh}
+        onScene={setScene}
+      />
+    </Suspense>
+  );
+
+  // ?hero=1: full-bleed globe for the launch GIF — nothing but the globe, the
+  // device callout, and the (mandatory, D-009) fixture badge.
+  if (params.hero) {
+    return (
+      <main className="h-screen w-screen bg-[#060a12]">
+        <div className="relative h-full w-full">
+          {globeEl}
+          {heroCallout && (
+            <div className="pointer-events-none absolute inset-x-0 bottom-10 flex justify-center">
+              <span className="rounded-full border border-slate-700 bg-slate-950/85 px-5 py-2 text-lg font-semibold text-slate-100 shadow-lg">
+                {heroCallout}
+              </span>
+            </div>
+          )}
+          <div className="pointer-events-none absolute left-5 top-5 font-mono text-lg font-bold tracking-tight text-slate-200">
+            phonehome<span className="ml-1.5 inline-block h-2 w-2 rounded-full bg-emerald-400" />
+          </div>
+        </div>
+        <FixtureBadge show={hasFixtureSource} />
+      </main>
+    );
+  }
 
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl flex-col gap-8 px-6 py-10">
@@ -183,41 +236,7 @@ export default function App() {
         <div className="flex h-[540px] gap-4">
           <FilterRail devices={devices} filter={filter} onChange={setFilter} />
           <div className="relative flex-1 overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
-            <Suspense
-              fallback={
-                <div className="flex h-full items-center justify-center text-xs text-slate-500">
-                  loading globe…
-                </div>
-              }
-            >
-              <GlobeCanvas
-                arcs={arcRows}
-                home={home}
-                filter={filter}
-                stress={params.stress}
-                subscribePulse={sse.subscribe}
-                onArcClick={(arc) =>
-                  setDrill(
-                    arc
-                      ? {
-                          device_id: arc.device_id,
-                          device_name: arc.device_name,
-                          country: arc.country,
-                        }
-                      : null,
-                  )
-                }
-                onUnknownPulse={scheduleRefresh}
-                onScene={setScene}
-              />
-            </Suspense>
-            {heroCallout && (
-              <div className="pointer-events-none absolute inset-x-0 bottom-6 flex justify-center">
-                <span className="rounded-full border border-slate-700 bg-slate-950/85 px-4 py-1.5 text-sm font-semibold text-slate-100 shadow-lg">
-                  {heroCallout}
-                </span>
-              </div>
-            )}
+            {globeEl}
             {home === null && params.stress === 0 && (
               <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center">
                 <span className="rounded-full border border-amber-500/40 bg-amber-950/70 px-3 py-1 text-xs text-amber-300">

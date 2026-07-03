@@ -209,6 +209,7 @@ export class GlobeScene {
       this.polylines.push(arcPolyline(start, end, POLYLINE_SAMPLES, 1, ARC_H0, ARC_H1));
     }
     this.arcsMesh.setArcs(instances);
+    this.applyVisibility(); // setArcs resets per-instance opacity to 1
     this.syncLabels(start);
   }
 
@@ -221,9 +222,39 @@ export class GlobeScene {
     this.labels.clear();
   }
 
+  private filterIds: Set<number> | null = null;
+  private emphasisIds: Set<number> | null = null;
+
   /** Device filter: hide arcs whose device isn't in `ids` (null = show all). */
   setVisibleDevices(ids: Set<number> | null) {
-    this.arcsMesh.setVisible((i) => ids === null || ids.has(this.arcData[i]?.device_id));
+    this.filterIds = ids;
+    this.applyVisibility();
+  }
+
+  /** Hero emphasis: highlighted devices at full brightness, the rest dimmed
+   * (context stays visible, unlike the filter) plus a pulse on the leads. */
+  setDeviceEmphasis(ids: Set<number> | null) {
+    this.emphasisIds = ids;
+    this.applyVisibility();
+    if (ids) {
+      this.arcData.forEach((a, i) => {
+        if (ids.has(a.device_id)) this.arcsMesh.pulse(i);
+      });
+    }
+  }
+
+  private applyVisibility() {
+    this.arcsMesh.setVisible((i) => {
+      const device = this.arcData[i]?.device_id;
+      if (this.filterIds !== null && !this.filterIds.has(device)) return 0;
+      if (this.emphasisIds !== null && !this.emphasisIds.has(device)) return 0.3;
+      return 1;
+    });
+  }
+
+  /** Camera distance (hero zooms out so long-arc apexes fit the frame). */
+  setDistance(d: number) {
+    this.distance = Math.max(1.6, Math.min(5, d));
   }
 
   /** SSE pulse routing; false when the (device, country) pair has no arc yet. */
