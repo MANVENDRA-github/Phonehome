@@ -1,12 +1,13 @@
 //! Phonehome daemon: one binary serving the JSON API, the embedded UI, and the
 //! ingestion loops (D-002/D-006).
 
+mod adguard;
 mod ingest;
 mod pihole;
 mod store;
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -36,6 +37,8 @@ fn app(store: Store) -> Router {
         .route("/api/devices", get(devices))
         .route("/api/devices/rename", post(rename_device))
         .route("/api/devices/merge", post(merge_devices))
+        .route("/api/devices/{id}/scorecard", get(scorecard))
+        .route("/api/snapshots", get(snapshots))
         .fallback(static_handler)
         .with_state(store)
 }
@@ -112,6 +115,28 @@ async fn merge_devices(
     }
 }
 
+async fn scorecard(
+    State(store): State<Store>,
+    Path(id): Path<i64>,
+) -> Result<Json<store::DeviceScorecard>, Response> {
+    let card = tokio::task::spawn_blocking(move || store.device_scorecard(id))
+        .await
+        .map_err(internal_error)?
+        .map_err(internal_error)?;
+    match card {
+        Some(c) => Ok(Json(c)),
+        None => Err((StatusCode::NOT_FOUND, "no such device").into_response()),
+    }
+}
+
+async fn snapshots(State(store): State<Store>) -> Result<Json<Vec<store::Snapshot>>, Response> {
+    let rows = tokio::task::spawn_blocking(move || store.list_snapshots())
+        .await
+        .map_err(internal_error)?
+        .map_err(internal_error)?;
+    Ok(Json(rows))
+}
+
 /// Serve the embedded UI; unknown non-API paths fall back to `index.html` (SPA).
 async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
@@ -129,9 +154,9 @@ async fn static_handler(uri: Uri) -> Response {
     }
 }
 
-/// Build the configured ingestors from env (M1 config surface; the setup
-/// wizard arrives at M5). PHONEHOME_FIXTURE and PHONEHOME_PIHOLE_URL(+_PASSWORD)
-/// may both be set — each becomes its own source.
+/// Build the configured ingestors from env (config surface until the M5 setup
+/// wizard). Fixture, Pi-hole, and AdGuard may all be set — each becomes its own
+/// source, exercising the source-agnostic boundary (D-003).
 fn configured_ingestors() -> Vec<(Box<dyn Ingestor>, Duration)> {
     let mut out: Vec<(Box<dyn Ingestor>, Duration)> = Vec::new();
 
@@ -166,12 +191,65 @@ fn configured_ingestors() -> Vec<(Box<dyn Ingestor>, Duration)> {
         }
     }
 
+    if let Ok(url) = std::env::var("PHONEHOME_ADGUARD_URL") {
+        match (
+            std::env::var("PHONEHOME_ADGUARD_USERNAME"),
+            std::env::var("PHONEHOME_ADGUARD_PASSWORD"),
+        ) {
+            (Ok(user), Ok(password)) => {
+                let interval = std::env::var("PHONEHOME_POLL_INTERVAL_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(15u64);
+                tracing::info!(url, interval, "adguard source configured");
+                out.push((
+                    Box::new(adguard::AdguardIngestor::new(
+                        "adguard-main",
+                        url,
+                        user,
+                        password,
+                    )),
+                    Duration::from_secs(interval),
+                ));
+            }
+            _ => tracing::error!(
+                "PHONEHOME_ADGUARD_URL set but PHONEHOME_ADGUARD_USERNAME/_PASSWORD missing"
+            ),
+        }
+    }
+
     out
+}
+
+/// Recomputes weekly snapshots on an interval so the scorecard history stays
+/// fresh as ingestion proceeds. Idempotent (per device×week upsert).
+async fn snapshot_loop(store: Store) {
+    const EVERY: Duration = Duration::from_secs(60);
+    let mut ticker = tokio::time::interval(EVERY);
+    loop {
+        ticker.tick().await;
+        let store = store.clone();
+        let now = now_ms();
+        match tokio::task::spawn_blocking(move || store.snapshot_all_weeks(now)).await {
+            Ok(Ok(n)) if n > 0 => tracing::debug!(snapshots = n, "weekly snapshots refreshed"),
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::error!(error = %e, "snapshot job failed"),
+            Err(e) => tracing::error!(error = %e, "snapshot task panicked"),
+        }
+    }
 }
 
 async fn shutdown_signal() {
     tokio::signal::ctrl_c().await.ok();
     tracing::info!("shutting down");
+}
+
+fn now_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 #[tokio::main]
@@ -198,6 +276,7 @@ async fn main() {
     for (ingestor, interval) in configured_ingestors() {
         tokio::spawn(ingest::run(store.clone(), ingestor, interval));
     }
+    tokio::spawn(snapshot_loop(store.clone()));
 
     let port: u16 = std::env::var("PHONEHOME_PORT")
         .ok()
@@ -396,5 +475,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    // --- M3 scorecard + snapshots endpoints ---
+
+    #[tokio::test]
+    async fn scorecard_endpoint_returns_score_with_inputs() {
+        let store = seed_store();
+        let id = store.list_devices().unwrap()[0].id;
+        let res = app(store)
+            .oneshot(
+                Request::get(format!("/api/devices/{id}/scorecard"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_body(res).await;
+        // Score plus its explaining components and raw inputs are all present.
+        assert!(v["score"].is_number());
+        assert!(v["components"]["tracker_share"].is_number());
+        assert!(v["inputs"]["tracker_queries"].is_number());
+        assert!(v["weights"]["tracker_share"].is_number());
+    }
+
+    #[tokio::test]
+    async fn scorecard_missing_device_is_404() {
+        let res = app(seed_store())
+            .oneshot(
+                Request::get("/api/devices/9999/scorecard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn snapshots_endpoint_lists_after_job() {
+        let store = seed_store();
+        store.snapshot_all_weeks(0).unwrap();
+        let res = app(store)
+            .oneshot(Request::get("/api/snapshots").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_body(res).await;
+        assert!(!v.as_array().unwrap().is_empty());
+        assert!(v[0]["score"].is_number());
     }
 }
