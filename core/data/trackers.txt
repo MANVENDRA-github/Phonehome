@@ -1,0 +1,55 @@
+# Tracker/ad blocklist — CURATED SEED (not the full oisd / StevenBlack lists).
+#
+# One domain per line; `#` comments and blank lines ignored. A destination is
+# flagged `on_blocklist` when its domain equals, or is a dot-subdomain of, a
+# line here. Same plain-domain shape as the big lists, so you can drop in the
+# full oisd / StevenBlack hosts file to widen coverage.
+#
+# This seed covers the dev fixture's clear ad/analytics/telemetry endpoints plus
+# a handful of ubiquitous trackers. It is deliberately SMALL — the entity map
+# (entities.toml) is the primary tracker signal via category; this list catches
+# tracker domains that have no entity entry.
+
+# --- advertising ---
+doubleclick.net
+googleads.g.doubleclick.net
+samsungads.com
+ads.samsung.com
+api-adservices.apple.com
+
+# --- analytics / measurement ---
+app-measurement.com
+firebaselogging-pa.googleapis.com
+graph.facebook.com
+analytics.tuya.com
+app-analytics.ring.com
+log-ingestion.samsungacr.com
+acr0.samsungcloudsolution.com
+xp.apple.com
+smoot.apple.com
+
+# --- device telemetry / metrics ---
+device-metrics-us.amazon.com
+device-metrics-us-2.amazon.com
+unagi-na.amazon.com
+logs.iot.irobotapi.com
+logsink.devices.nest.com
+self.events.data.microsoft.com
+v10.events.data.microsoft.com
+settings-win.data.microsoft.com
+telemetry.nintendo.com
+gdmf.epson.com
+heartbeat.xwemo.com
+use1-api.tplinkra.com
+
+# --- common trackers not in the fixture (real-world drop-ins) ---
+google-analytics.com
+analytics.google.com
+scorecardresearch.com
+adnxs.com
+criteo.com
+segment.io
+mixpanel.com
+amplitude.com
+sentry.io
+bugsnag.com
