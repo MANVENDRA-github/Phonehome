@@ -39,15 +39,19 @@ test("arc click-through reaches raw rollup data in two clicks", async ({ page })
   await page.evaluate(() => (window as any).__phonehome.setAutoRotate(0));
   await page.waitForTimeout(500);
 
-  const point = await page.evaluate(() => (window as any).__phonehome.arcScreenPoint(0));
-  expect(point).not.toBeNull();
   const canvas = page.locator('[data-testid="globe"] canvas');
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
 
-  // Click 1: the arc → domain list.
-  await page.mouse.click(box!.x + point!.x, box!.y + point!.y);
-  await expect(page.getByTestId("drill-panel")).toBeVisible();
+  // Click 1: an arc → domain list. While the fixture is still replaying, a
+  // debounced /api/arcs refetch can rebuild+reorder arcs between sampling the
+  // click target and the click landing — re-sample fresh and retry.
+  await expect(async () => {
+    const point = await page.evaluate(() => (window as any).__phonehome.arcScreenPoint(0));
+    expect(point).not.toBeNull();
+    await page.mouse.click(box!.x + point!.x, box!.y + point!.y);
+    await expect(page.getByTestId("drill-panel")).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 30_000 });
   const domains = page.locator('[data-testid="drill-domains"] li');
   await expect(domains.first()).toBeVisible();
 

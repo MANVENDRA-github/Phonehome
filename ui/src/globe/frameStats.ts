@@ -53,7 +53,7 @@ export class FrameStats {
       p95_ms: pct(95),
       p99_ms: pct(99),
       backend: this.backend,
-      dpr: window.length >= 0 ? Math.min(globalThis.devicePixelRatio ?? 1, 2) : 1,
+      dpr: Math.min(globalThis.devicePixelRatio ?? 1, 2),
     };
   }
 }

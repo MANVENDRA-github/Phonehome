@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 export function NameEditor(props: {
   initial: string;
@@ -6,6 +6,19 @@ export function NameEditor(props: {
   onCancel: () => void;
 }) {
   const [value, setValue] = useState(props.initial);
+  // Enter/Escape resolve the editor, which unmounts this input; a blur fired
+  // during that unmount must not commit again (Escape would otherwise rename).
+  const resolved = useRef(false);
+  const commit = () => {
+    if (resolved.current) return;
+    resolved.current = true;
+    props.onCommit(value);
+  };
+  const cancel = () => {
+    if (resolved.current) return;
+    resolved.current = true;
+    props.onCancel();
+  };
   return (
     <input
       autoFocus
@@ -14,10 +27,10 @@ export function NameEditor(props: {
       placeholder="device name (blank to reset)"
       onChange={(e) => setValue(e.target.value)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") props.onCommit(value);
-        if (e.key === "Escape") props.onCancel();
+        if (e.key === "Enter") commit();
+        if (e.key === "Escape") cancel();
       }}
-      onBlur={() => props.onCommit(value)}
+      onBlur={commit}
     />
   );
 }

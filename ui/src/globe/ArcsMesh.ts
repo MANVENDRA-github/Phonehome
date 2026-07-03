@@ -115,6 +115,9 @@ export class ArcsMesh {
     this.geometry.setAttribute("iColor", this.aColor);
     this.geometry.setAttribute("iAnim", this.aAnim);
     this.geometry.setAttribute("iState", this.aState);
+    // Explicitly empty until setArcs() — the render loop starts before React
+    // delivers the first arc data.
+    this.geometry.instanceCount = this.count;
   }
 
   private buildNodes() {
