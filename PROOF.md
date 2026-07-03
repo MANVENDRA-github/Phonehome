@@ -359,7 +359,7 @@ origin. Provenance per D-008/D-009:
 
 ### CI — green
 
-Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/PENDING — recorded after the M4 PRs' checks complete (build-test + vitest, playwright-smoke, docker-smoke).
+Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28684048370 — on PR #8 (the full M4 stack #6→#7→#8): `build-test` incl. vitest pass (50s) · `playwright-smoke` pass (1m21s — the globe smoke incl. the 2-click drill-down, on SwiftShader WebGL) · `docker-smoke` pass (2m29s).
 
 **M4 acceptance met:** instanced WebGPU globe with WebGL fallback renders the
 fixture's device→country arcs with tracker coloring, device filter, and SSE
