@@ -4,7 +4,7 @@
 //!   cargo run -p phonehome-core --example gen_fixture > fixtures/household-01.jsonl
 //!
 //! The output is SYNTHETIC-REALISTIC and clearly labeled as such (see
-//! fixtures/README.md): a plausible 15-device household over 8 days, modeled on
+//! fixtures/README.md): a plausible 18-device household over 8 days, modeled on
 //! public knowledge of what consumer devices query (vendor telemetry, ad
 //! networks, CDNs). It is NOT a capture of a real network. Seeded LCG → the
 //! same fixture bytes on every run.
@@ -57,6 +57,7 @@ const DEVICES: &[Device] = &[
             ("nflxvideo.net", "A", false),
             ("youtube.com", "HTTPS", false),
             ("googlevideo.com", "A", false),
+            ("widget.criteo.com", "A", true),
         ],
         rate_per_hour: 40,
         active: (7, 23),
@@ -124,6 +125,11 @@ const DEVICES: &[Device] = &[
             ("mtalk.google.com", "A", false),
             ("doubleclick.net", "A", true),
             ("googleads.g.doubleclick.net", "A", true),
+            ("log.tiktokv.com", "A", true),
+            ("api16-normal-c-alisg.tiktokv.com", "A", false),
+            ("mc.yandex.ru", "A", true),
+            ("api.hotstar.com", "A", false),
+            ("api-v2.soundcloud.com", "A", false),
         ],
         rate_per_hour: 60,
         active: (7, 24),
@@ -155,6 +161,10 @@ const DEVICES: &[Device] = &[
             ("marketplace.visualstudio.com", "A", false),
             ("crates.io", "A", false),
             ("static.rust-lang.org", "A", false),
+            ("bitbucket.org", "A", false),
+            ("id.atlassian.com", "A", false),
+            ("mail.proton.me", "HTTPS", false),
+            ("www.bbc.co.uk", "A", false),
         ],
         rate_per_hour: 35,
         active: (9, 23),
@@ -227,6 +237,41 @@ const DEVICES: &[Device] = &[
             ("m2.tuyaeu.com", "A", false),
         ],
         rate_per_hour: 15,
+        active: (0, 24),
+    },
+    Device {
+        ip: "192.168.1.45",
+        mac: Some("00:17:88:0b:cd:ef"),
+        domains: &[
+            ("api.meethue.com", "A", false),
+            ("time.meethue.com", "A", false),
+            ("data.meethue.com", "A", true),
+        ],
+        rate_per_hour: 6,
+        active: (0, 24),
+    },
+    Device {
+        ip: "192.168.1.46",
+        mac: Some("c8:d7:78:9a:bc:de"),
+        domains: &[
+            ("api.home-connect.com", "A", false),
+            ("prod.reu.rest.homeconnectegw.com", "A", false),
+        ],
+        rate_per_hour: 2,
+        active: (6, 22),
+    },
+    // The router itself is a DNS client too. pool.ntp.org deliberately has no
+    // entity entry — it exercises explicit-unknown enrichment and the globe's
+    // unmapped_queries disclosure.
+    Device {
+        ip: "192.168.1.1",
+        mac: Some("04:d9:f5:12:34:56"),
+        domains: &[
+            ("nw-dlcdnet.asus.com", "A", false),
+            ("dlcdnets.asus.com", "A", false),
+            ("pool.ntp.org", "A", false),
+        ],
+        rate_per_hour: 5,
         active: (0, 24),
     },
     // A client the source only knows by IP (no MAC) — exercises the

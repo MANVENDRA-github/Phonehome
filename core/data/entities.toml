@@ -417,3 +417,114 @@ suffix = "android.apis.google.com"
 name = "Google"
 category = "functional"
 country = "US"
+
+# --- Criteo (retargeting ads, served into TV/phone apps) ---
+[[entity]]
+suffix = "criteo.com"
+name = "Criteo"
+category = "advertising"
+country = "FR"
+
+# --- TikTok (TikTok Pte. Ltd., Singapore — see D-011: HQ/jurisdiction) ---
+[[entity]]
+suffix = "log.tiktokv.com"
+name = "TikTok"
+category = "telemetry"
+country = "SG"
+[[entity]]
+suffix = "tiktokv.com"
+name = "TikTok"
+category = "functional"
+country = "SG"
+
+# --- Yandex (AppMetrica / Metrica) ---
+[[entity]]
+suffix = "mc.yandex.ru"
+name = "Yandex Metrica"
+category = "analytics"
+country = "RU"
+[[entity]]
+suffix = "yandex.ru"
+name = "Yandex"
+category = "functional"
+country = "RU"
+
+# --- Disney+ Hotstar (Star India) ---
+[[entity]]
+suffix = "hotstar.com"
+name = "Disney+ Hotstar"
+category = "first_party"
+country = "IN"
+
+# --- SoundCloud ---
+[[entity]]
+suffix = "soundcloud.com"
+name = "SoundCloud"
+category = "first_party"
+country = "DE"
+
+# --- Signify / Philips Hue (bridge) ---
+[[entity]]
+suffix = "data.meethue.com"
+name = "Signify (Philips Hue)"
+category = "telemetry"
+country = "NL"
+[[entity]]
+suffix = "meethue.com"
+name = "Signify (Philips Hue)"
+category = "functional"
+country = "NL"
+
+# --- ASUS (router firmware/CDN) ---
+[[entity]]
+suffix = "dlcdnets.asus.com"
+name = "ASUS"
+category = "cdn"
+country = "TW"
+[[entity]]
+suffix = "asus.com"
+name = "ASUS"
+category = "functional"
+country = "TW"
+
+# --- BSH Home Connect (Bosch/Siemens appliances) ---
+[[entity]]
+suffix = "home-connect.com"
+name = "BSH Home Connect"
+category = "functional"
+country = "DE"
+[[entity]]
+suffix = "homeconnectegw.com"
+name = "BSH Home Connect"
+category = "functional"
+country = "DE"
+
+# --- Atlassian (dev laptop) ---
+[[entity]]
+suffix = "bitbucket.org"
+name = "Atlassian"
+category = "first_party"
+country = "AU"
+[[entity]]
+suffix = "atlassian.com"
+name = "Atlassian"
+category = "functional"
+country = "AU"
+
+# --- Proton (mail) ---
+[[entity]]
+suffix = "proton.me"
+name = "Proton"
+category = "functional"
+country = "CH"
+
+# --- BBC ---
+[[entity]]
+suffix = "bbc.co.uk"
+name = "BBC"
+category = "first_party"
+country = "GB"
+
+# NOTE: pool.ntp.org (queried by the fixture's router) is deliberately absent —
+# it exercises the explicit-unknown enrichment path and the globe's
+# `unmapped_queries` disclosure end to end.
