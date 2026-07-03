@@ -6,7 +6,7 @@ Read this first in every session. It exists so any AI coding agent (Claude Code,
 
 **Phonehome** — a self-hosted privacy radar for home networks. It ingests DNS query logs from Pi-hole v6 / AdGuard Home (never packet capture), attributes queries to named LAN devices, tags destinations against tracker blocklists + GeoIP + a company-entity map, and renders per-device privacy scorecards with weekly diffs plus a WebGPU globe of device→destination arcs. 100% local, zero telemetry, ships as one `docker compose up`.
 
-Current phase: **M3 (enrichment + scorecard + AdGuard adapter) done — next work item is SPEC.md M4 (the WebGPU globe + hero GIF).** Open follow-ups: live Pi-hole/AdGuard validation + a real anonymized fixture (D-009, before the M4 GIF); real-household scorecard weight tuning (D-012); optional user-provided GeoLite2 for unmapped domains (D-011); automated DHCP/mDNS discovery (deferred at M2); local Docker blocked on machine virtualization (PROOF §M0).
+Current phase: **M4 (the globe) in progress — backend (PR: arcs/drill-down/config/SSE) and globe UI (PR: three.js WebGPU+TSL globe, fixture widened to 18 devices / 15 countries) built; remaining: Playwright smoke + perf harness, measured FPS on iGPU/dGPU, hero GIF, PROOF §M4.** Open follow-ups: live Pi-hole/AdGuard validation + a real anonymized fixture (D-009, before the M4 GIF ideally); real-household scorecard weight tuning (D-012); optional user-provided GeoLite2 for unmapped domains (D-011); automated DHCP/mDNS discovery (deferred at M2); local Docker blocked on machine virtualization (PROOF §M0).
 
 ## Read order for context
 
@@ -37,7 +37,7 @@ Current phase: **M3 (enrichment + scorecard + AdGuard adapter) done — next wor
 
 ## Stack & commands (confirmed at M0)
 
-Rust workspace: `daemon/` (bin — Axum 0.8, tokio, rust-embed) + `core/` (lib — the normalized `QueryEvent` model). UI: `ui/` — Vite 6 + React 19 + TypeScript + Tailwind v4 (Three.js arrives at M4; rusqlite arrives at M1). Deploy: multi-stage Dockerfile + docker-compose (one service, one volume). CI: `.github/workflows/ci.yml` — `build-test` (UI build, fmt, clippy `-D warnings`, tests) + `docker-smoke` (compose up + live health/page probes).
+Rust workspace: `daemon/` (bin — Axum 0.8, tokio, rust-embed) + `core/` (lib — the normalized `QueryEvent` model). UI: `ui/` — Vite 6 + React 19 + TypeScript + Tailwind v4 + three.js 0.185 pinned exact (WebGPU + TSL, WebGL2 fallback — see D-013; `npm test` = vitest for globe math/centroids). Deploy: multi-stage Dockerfile + docker-compose (one service, one volume). CI: `.github/workflows/ci.yml` — `build-test` (UI build, fmt, clippy `-D warnings`, tests) + `docker-smoke` (compose up + live health/page probes).
 
 **Build order matters:** the daemon embeds `ui/dist` at compile time — always build the UI before the daemon.
 
@@ -67,6 +67,8 @@ curl "localhost:8480/api/rollups?device=1&domain=api.ring.com"  # M4: raw hourly
 curl localhost:8480/api/config                # M4: home lat/lon + version
 curl -N localhost:8480/api/stream             # M4: SSE pulses while ingestion runs
 # PHONEHOME_HOME_LAT=12.97 PHONEHOME_HOME_LON=77.59  (globe arc origin; unset -> UI hint)
+# globe URL params: ?gl=1 force WebGL · ?hud=1 frame stats · ?stress=N synthetic-arc benchmark · ?hero=1 GIF choreography
+npm --prefix ui test                          # vitest: globe math + centroid coverage
 # AdGuard source (env, alongside/instead of Pi-hole; each is its own source):
 # PHONEHOME_ADGUARD_URL=http://adguard PHONEHOME_ADGUARD_USERNAME=admin PHONEHOME_ADGUARD_PASSWORD=...
 # regenerate the fixture (deterministic, D-009):

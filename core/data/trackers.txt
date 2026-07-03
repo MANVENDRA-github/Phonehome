@@ -16,6 +16,7 @@ googleads.g.doubleclick.net
 samsungads.com
 ads.samsung.com
 api-adservices.apple.com
+criteo.com
 
 # --- analytics / measurement ---
 app-measurement.com
@@ -27,6 +28,7 @@ log-ingestion.samsungacr.com
 acr0.samsungcloudsolution.com
 xp.apple.com
 smoot.apple.com
+mc.yandex.ru
 
 # --- device telemetry / metrics ---
 device-metrics-us.amazon.com
@@ -38,6 +40,7 @@ self.events.data.microsoft.com
 v10.events.data.microsoft.com
 settings-win.data.microsoft.com
 telemetry.nintendo.com
+log.tiktokv.com
 gdmf.epson.com
 heartbeat.xwemo.com
 use1-api.tplinkra.com
