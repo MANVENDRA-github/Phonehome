@@ -7,18 +7,24 @@ mod pihole;
 mod store;
 
 use axum::{
-    extract::{Path, State},
+    extract::{FromRef, Path, Query, State},
     http::{header, StatusCode, Uri},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
     routing::{get, post},
     Json, Router,
 };
 use phonehome_core::{FixtureReplayer, Ingestor};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
+use std::convert::Infallible;
 use std::path::PathBuf;
 use std::time::Duration;
 use store::{DeviceError, Store};
+use tokio::sync::broadcast;
+use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
 
 /// `ui/dist` compiled into the binary. Build order: `npm run build` in `ui/`
 /// first, then `cargo build` (see CLAUDE.md commands; Dockerfile and CI follow it).
@@ -29,18 +35,56 @@ struct Assets;
 const DEFAULT_PORT: u16 = 8480;
 const DEFAULT_DB: &str = "data/phonehome.db";
 const FIXTURE_CHUNK: usize = 1000;
+/// Live-pulse fan-out buffer; a lagging SSE subscriber drops pulses (they are
+/// hints, not state — the globe refetches /api/arcs to reconcile).
+const PULSE_BUFFER: usize = 256;
 
-fn app(store: Store) -> Router {
+/// The home network's location on the globe (arc origin). Config-only data —
+/// never derived from traffic.
+#[derive(Clone, Copy, serde::Serialize)]
+struct Home {
+    lat: f64,
+    lon: f64,
+}
+
+/// Client-facing runtime config (`GET /api/config`), parsed from env once at
+/// startup (env is the config surface until the M5 wizard).
+#[derive(Clone, serde::Serialize)]
+struct ApiConfig {
+    home: Option<Home>,
+    version: &'static str,
+}
+
+#[derive(Clone)]
+struct AppState {
+    store: Store,
+    pulses: broadcast::Sender<store::Pulse>,
+    config: ApiConfig,
+}
+
+/// Lets the seven pre-M4 handlers keep extracting `State<Store>` unchanged.
+impl FromRef<AppState> for Store {
+    fn from_ref(state: &AppState) -> Store {
+        state.store.clone()
+    }
+}
+
+fn app(state: AppState) -> Router {
     Router::new()
         .route("/api/health", get(health))
+        .route("/api/config", get(config))
         .route("/api/stats", get(stats))
         .route("/api/devices", get(devices))
         .route("/api/devices/rename", post(rename_device))
         .route("/api/devices/merge", post(merge_devices))
         .route("/api/devices/{id}/scorecard", get(scorecard))
         .route("/api/snapshots", get(snapshots))
+        .route("/api/arcs", get(arcs))
+        .route("/api/arcs/domains", get(arc_domains))
+        .route("/api/rollups", get(rollups))
+        .route("/api/stream", get(stream))
         .fallback(static_handler)
-        .with_state(store)
+        .with_state(state)
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -137,6 +181,97 @@ async fn snapshots(State(store): State<Store>) -> Result<Json<Vec<store::Snapsho
     Ok(Json(rows))
 }
 
+async fn config(State(state): State<AppState>) -> Json<ApiConfig> {
+    Json(state.config)
+}
+
+/// Resolves an optional `window` query param (hours, counting back from now)
+/// to the `[start, end)` millisecond range the store queries take.
+fn resolve_window(hours: Option<i64>) -> Result<Option<(i64, i64)>, (StatusCode, &'static str)> {
+    match hours {
+        None => Ok(None),
+        Some(h) if h > 0 => {
+            let now = now_ms();
+            Ok(Some((now - h * 3_600_000, now)))
+        }
+        Some(_) => Err((StatusCode::BAD_REQUEST, "window must be positive hours")),
+    }
+}
+
+#[derive(Deserialize)]
+struct ArcsQuery {
+    window: Option<i64>,
+}
+
+async fn arcs(
+    State(store): State<Store>,
+    Query(q): Query<ArcsQuery>,
+) -> Result<Json<store::ArcsResponse>, Response> {
+    let window = resolve_window(q.window).map_err(IntoResponse::into_response)?;
+    let arcs = tokio::task::spawn_blocking(move || store.arcs(window))
+        .await
+        .map_err(internal_error)?
+        .map_err(internal_error)?;
+    Ok(Json(arcs))
+}
+
+#[derive(Deserialize)]
+struct ArcDomainsQuery {
+    device: i64,
+    country: String,
+    window: Option<i64>,
+}
+
+async fn arc_domains(
+    State(store): State<Store>,
+    Query(q): Query<ArcDomainsQuery>,
+) -> Result<Json<Vec<store::ArcDomainRow>>, Response> {
+    let window = resolve_window(q.window).map_err(IntoResponse::into_response)?;
+    let rows = tokio::task::spawn_blocking(move || store.arc_domains(q.device, &q.country, window))
+        .await
+        .map_err(internal_error)?
+        .map_err(internal_error)?;
+    Ok(Json(rows))
+}
+
+#[derive(Deserialize)]
+struct RollupsQuery {
+    device: i64,
+    domain: String,
+    window: Option<i64>,
+}
+
+async fn rollups(
+    State(store): State<Store>,
+    Query(q): Query<RollupsQuery>,
+) -> Result<Json<Vec<store::RollupRow>>, Response> {
+    let window = resolve_window(q.window).map_err(IntoResponse::into_response)?;
+    let rows =
+        tokio::task::spawn_blocking(move || store.domain_rollups(q.device, &q.domain, window))
+            .await
+            .map_err(internal_error)?
+            .map_err(internal_error)?;
+    Ok(Json(rows))
+}
+
+/// SSE live updates (S-1): one `pulse` event per (device, domain) committed by
+/// ingestion. Lagged subscribers silently drop pulses — they are hints for the
+/// globe's animations, not state.
+async fn stream(
+    State(state): State<AppState>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = state.pulses.subscribe();
+    let events = BroadcastStream::new(rx).filter_map(|item| {
+        item.ok().map(|pulse| {
+            Ok(Event::default()
+                .event("pulse")
+                .json_data(&pulse)
+                .unwrap_or_default())
+        })
+    });
+    Sse::new(events).keep_alive(KeepAlive::default())
+}
+
 /// Serve the embedded UI; unknown non-API paths fall back to `index.html` (SPA).
 async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
@@ -221,6 +356,21 @@ fn configured_ingestors() -> Vec<(Box<dyn Ingestor>, Duration)> {
     out
 }
 
+/// Reads `PHONEHOME_HOME_LAT` / `PHONEHOME_HOME_LON` (decimal degrees). Both
+/// must be present and in range or the home stays unset — the UI then shows a
+/// "set home location" hint instead of a wrong origin.
+fn configured_home() -> Option<Home> {
+    let lat = std::env::var("PHONEHOME_HOME_LAT").ok()?;
+    let lon = std::env::var("PHONEHOME_HOME_LON").ok()?;
+    match (lat.parse::<f64>(), lon.parse::<f64>()) {
+        (Ok(lat), Ok(lon)) if lat.abs() <= 90.0 && lon.abs() <= 180.0 => Some(Home { lat, lon }),
+        _ => {
+            tracing::error!(lat, lon, "invalid PHONEHOME_HOME_LAT/LON ignored");
+            None
+        }
+    }
+}
+
 /// Recomputes weekly snapshots on an interval so the scorecard history stays
 /// fresh as ingestion proceeds. Idempotent (per device×week upsert).
 async fn snapshot_loop(store: Store) {
@@ -273,8 +423,14 @@ async fn main() {
         .unwrap_or_else(|e| panic!("open sqlite db {}: {e}", db_path.display()));
     tracing::info!(db = %db_path.display(), "store opened");
 
+    let (pulses, _) = broadcast::channel::<store::Pulse>(PULSE_BUFFER);
     for (ingestor, interval) in configured_ingestors() {
-        tokio::spawn(ingest::run(store.clone(), ingestor, interval));
+        tokio::spawn(ingest::run(
+            store.clone(),
+            pulses.clone(),
+            ingestor,
+            interval,
+        ));
     }
     tokio::spawn(snapshot_loop(store.clone()));
 
@@ -289,7 +445,15 @@ async fn main() {
         .unwrap_or_else(|e| panic!("failed to bind {addr}: {e}"));
     tracing::info!("phonehome daemon listening on http://localhost:{port}");
 
-    axum::serve(listener, app(store))
+    let state = AppState {
+        store,
+        pulses,
+        config: ApiConfig {
+            home: configured_home(),
+            version: env!("CARGO_PKG_VERSION"),
+        },
+    };
+    axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("server error");
@@ -302,8 +466,26 @@ mod tests {
     use axum::http::Request;
     use tower::ServiceExt;
 
+    fn state_for(store: Store) -> AppState {
+        AppState {
+            store,
+            pulses: broadcast::channel(PULSE_BUFFER).0,
+            config: ApiConfig {
+                home: Some(Home {
+                    lat: 12.97,
+                    lon: 77.59,
+                }),
+                version: env!("CARGO_PKG_VERSION"),
+            },
+        }
+    }
+
+    fn app_for(store: Store) -> Router {
+        app(state_for(store))
+    }
+
     fn test_app() -> Router {
-        app(Store::open_in_memory().unwrap())
+        app_for(Store::open_in_memory().unwrap())
     }
 
     #[tokio::test]
@@ -391,7 +573,7 @@ mod tests {
 
     #[tokio::test]
     async fn devices_endpoint_lists_named_devices() {
-        let res = app(seed_store())
+        let res = app_for(seed_store())
             .oneshot(Request::get("/api/devices").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -410,7 +592,7 @@ mod tests {
         let ids: Vec<i64> = store.list_devices().unwrap().iter().map(|d| d.id).collect();
 
         // Rename first device.
-        let res = app(store.clone())
+        let res = app_for(store.clone())
             .oneshot(
                 Request::post("/api/devices/rename")
                     .header("content-type", "application/json")
@@ -428,7 +610,7 @@ mod tests {
         );
 
         // Merge second into first.
-        let res = app(store.clone())
+        let res = app_for(store.clone())
             .oneshot(
                 Request::post("/api/devices/merge")
                     .header("content-type", "application/json")
@@ -445,7 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn rename_missing_device_is_404() {
-        let res = app(seed_store())
+        let res = app_for(seed_store())
             .oneshot(
                 Request::post("/api/devices/rename")
                     .header("content-type", "application/json")
@@ -463,7 +645,7 @@ mod tests {
     async fn merge_into_self_is_400() {
         let store = seed_store();
         let id = store.list_devices().unwrap()[0].id;
-        let res = app(store)
+        let res = app_for(store)
             .oneshot(
                 Request::post("/api/devices/merge")
                     .header("content-type", "application/json")
@@ -483,7 +665,7 @@ mod tests {
     async fn scorecard_endpoint_returns_score_with_inputs() {
         let store = seed_store();
         let id = store.list_devices().unwrap()[0].id;
-        let res = app(store)
+        let res = app_for(store)
             .oneshot(
                 Request::get(format!("/api/devices/{id}/scorecard"))
                     .body(Body::empty())
@@ -502,7 +684,7 @@ mod tests {
 
     #[tokio::test]
     async fn scorecard_missing_device_is_404() {
-        let res = app(seed_store())
+        let res = app_for(seed_store())
             .oneshot(
                 Request::get("/api/devices/9999/scorecard")
                     .body(Body::empty())
@@ -513,11 +695,164 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
+    // --- M4 arcs + config + SSE ---
+
+    #[tokio::test]
+    async fn arcs_endpoint_returns_device_country_rows() {
+        let res = app_for(seed_store())
+            .oneshot(Request::get("/api/arcs").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_body(res).await;
+        let arcs = v["arcs"].as_array().unwrap();
+        assert_eq!(arcs.len(), 2, "one device x one country each");
+        assert!(arcs
+            .iter()
+            .any(|a| a["country"] == "KR" && a["tracker_queries"] == 1));
+        assert!(arcs.iter().all(|a| a["device_name"].is_string()));
+        assert_eq!(v["unmapped_queries"], 0);
+    }
+
+    #[tokio::test]
+    async fn arcs_negative_window_is_400() {
+        let res = app_for(seed_store())
+            .oneshot(
+                Request::get("/api/arcs?window=-5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn arc_domains_endpoint_lists_domains_behind_an_arc() {
+        let store = seed_store();
+        let device = store
+            .list_devices()
+            .unwrap()
+            .iter()
+            .find(|d| d.vendor.as_deref() == Some("Samsung Electronics"))
+            .unwrap()
+            .id;
+        let res = app_for(store)
+            .oneshot(
+                Request::get(format!("/api/arcs/domains?device={device}&country=KR"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_body(res).await;
+        let rows = v.as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["domain"], "samsungads.com");
+        assert_eq!(rows[0]["is_tracker"], true);
+        assert_eq!(rows[0]["queries"], 1);
+    }
+
+    #[tokio::test]
+    async fn arc_domains_missing_params_is_400() {
+        let res = app_for(seed_store())
+            .oneshot(
+                Request::get("/api/arcs/domains?device=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn rollups_endpoint_returns_hourly_buckets() {
+        let store = seed_store();
+        let device = store
+            .list_devices()
+            .unwrap()
+            .iter()
+            .find(|d| d.vendor.as_deref() == Some("Samsung Electronics"))
+            .unwrap()
+            .id;
+        let res = app_for(store)
+            .oneshot(
+                Request::get(format!(
+                    "/api/rollups?device={device}&domain=samsungads.com"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_body(res).await;
+        let rows = v.as_array().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["count"], 1);
+        assert_eq!(rows[0]["blocked_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn config_endpoint_reflects_state() {
+        let res = test_app()
+            .oneshot(Request::get("/api/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_body(res).await;
+        assert_eq!(v["home"]["lat"], 12.97);
+        assert_eq!(v["home"]["lon"], 77.59);
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn stream_emits_pulse_events() {
+        let state = state_for(Store::open_in_memory().unwrap());
+        let tx = state.pulses.clone();
+        let res = app(state)
+            .oneshot(Request::get("/api/stream").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream"));
+
+        // The handler subscribed while producing the response; send now.
+        tx.send(store::Pulse {
+            device_id: 1,
+            device_name: "Samsung Electronics · 22:33".into(),
+            domain: "samsungads.com".into(),
+            country: Some("KR".into()),
+            is_tracker: true,
+            count: 3,
+        })
+        .unwrap();
+
+        let mut body = res.into_body().into_data_stream();
+        let frame = tokio::time::timeout(Duration::from_secs(2), body.next())
+            .await
+            .expect("SSE frame within 2s")
+            .expect("stream still open")
+            .unwrap();
+        let text = String::from_utf8(frame.to_vec()).unwrap();
+        assert!(text.contains("event: pulse"), "got frame: {text}");
+        assert!(text.contains("\"domain\":\"samsungads.com\""));
+        assert!(text.contains("\"country\":\"KR\""));
+    }
+
     #[tokio::test]
     async fn snapshots_endpoint_lists_after_job() {
         let store = seed_store();
         store.snapshot_all_weeks(0).unwrap();
-        let res = app(store)
+        let res = app_for(store)
             .oneshot(Request::get("/api/snapshots").body(Body::empty()).unwrap())
             .await
             .unwrap();

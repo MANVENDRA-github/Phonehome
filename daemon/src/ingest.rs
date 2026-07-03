@@ -1,9 +1,10 @@
 //! The per-source ingest loop: poll → apply (atomically) → sleep → repeat.
 //! Source failures are logged and retried next tick — never fatal (§2.1).
 
-use crate::store::Store;
+use crate::store::{Pulse, Store};
 use phonehome_core::Ingestor;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::broadcast;
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -12,7 +13,12 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-pub async fn run(store: Store, mut ingestor: Box<dyn Ingestor>, interval: Duration) {
+pub async fn run(
+    store: Store,
+    pulses: broadcast::Sender<Pulse>,
+    mut ingestor: Box<dyn Ingestor>,
+    interval: Duration,
+) {
     let source_id = ingestor.source_id().to_owned();
     let kind = ingestor.kind();
     tracing::info!(source = %source_id, kind, "ingest loop started");
@@ -55,9 +61,14 @@ pub async fn run(store: Store, mut ingestor: Box<dyn Ingestor>, interval: Durati
                     })
                     .await;
                     match apply {
-                        Ok(Ok(())) => {
+                        Ok(Ok(batch_pulses)) => {
                             if n > 0 {
                                 tracing::info!(source = %source_id, events = n, "batch applied");
+                            }
+                            // Best-effort live hints; a send error just means
+                            // no /api/stream subscriber right now.
+                            for pulse in batch_pulses {
+                                let _ = pulses.send(pulse);
                             }
                         }
                         Ok(Err(e)) => {
