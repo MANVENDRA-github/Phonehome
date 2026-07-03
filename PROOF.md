@@ -189,3 +189,66 @@ Merge arithmetic verified exactly: 1155+516=1671 queries, 339+188=527 blocked, d
 Run: https://github.com/MANVENDRA-github/Phonehome/actions/runs/28610575066 — `build-test` pass (36s) + `docker-smoke` pass (2m4s) on PR #4.
 
 **M2 acceptance met:** the fixture's clients resolve to named devices per the precedence rules (before table); merge survives re-ingestion (keystone test + reopened-db live check); before/after device table captured from a real run above.
+
+---
+
+## §M3 — Enrichment + scorecard + AdGuard adapter (2026-07-03)
+
+### Tests — PASS (75 test executions, 0 failures)
+
+New on top of M2 (30 core + 32 daemon unit + 13 integration):
+```
+core::enrich  — entity/category/country map, longest-suffix wins, subdomain inherit,
+                first-party/functional not trackers, unknown is explicit, blocklist-only tracker
+core::score   — empty→0 (no div-by-zero), quiet device low, tracker magnet high,
+                monotonic in tracker share, components+inputs reported, spreads saturate
+store         — enrichment populates destinations + tracker_queries; scorecard ranks
+                tracker-heavy > quiet; scorecard None for missing; snapshots idempotent
+adguard       — login→poll→map (Filtered*→blocked, trailing-dot trim); cursor keeps only
+                strictly-newer; 401 re-login retry; bad-credentials error; empty-log keeps cursor
+api           — scorecard returns score+components+inputs+weights; 404 missing; snapshots list
+```
+`cargo fmt --check` clean; `cargo clippy --all-targets -- -D warnings` clean.
+
+### Enrichment coverage — PASS (SPEC M3 acceptance)
+
+Live fixture run, then a direct read of the `destinations` table:
+```
+75 destinations · 0 unknown-category · 0 no-entity · 26 trackers
+by category:  functional 37 · telemetry 12 · analytics 9 · first_party 6 · cdn 6 · advertising 5
+countries:    CN JP KR SE US
+```
+**All 75 fixture domains enriched to a known entity — zero `unknown`** (the acceptance bar).
+
+### Scorecard — live table + D-012 sanity check
+
+`GET /api/devices/{id}/scorecard` for every device (score · tracker-share% · tracker entities · countries · volume):
+```
+Google phone            54    51%   4   2   1514   ← chatty, ad+analytics heavy, 2 countries
+Samsung TV              42    41%   2   2    967
+Amazon (Ring)           40    43%   2   1    691
+Apple phone             39    43%   2   1    516
+Microsoft laptop        33    35%   1   1    710
+…
+Nest thermostat         24    22%   1   1    105
+Nintendo console        22    21%   1   1     48   ← quiet, few trackers
+```
+Ranking matches expectation (ad/analytics-heavy personal devices high, quiet IoT low) — the D-012 provisional-weights sanity check. Every scorecard returns its component values, raw inputs, and weights (SPEC: "always rendered with its inputs").
+
+### Snapshots — PASS
+
+Periodic job produced **30 snapshot rows = 15 devices × 2 ISO weeks** (the 8-day fixture spans two weeks), each with volume/tracker-domains/countries/score. Re-running the job is idempotent (upsert; test `snapshots_are_idempotent`). This is the history the M6 diff will consume.
+
+### AdGuard adapter — validated via wiremock (D-003 proven; live instance pending)
+
+No live AdGuard on this network (same posture as the pending live Pi-hole). The adapter is validated against recorded-shape HTTP: session-cookie login, `/control/querylog` newest-first pagination, `Filtered*`→blocked mapping, trailing-dot trim, strict time-cursor dedup, 401 re-login retry, bad-credential error. It implements the same `Ingestor` trait with **everything downstream unchanged** — that is the D-003 boundary proof. **Follow-up:** validate against a real AdGuard Home.
+
+### UI — PASS
+
+`npm run build` green; the daemon serves the device table with a tracker column and an **expandable per-device scorecard** (the 0–100 score plus meters for each component and the raw inputs — nothing unexplained).
+
+### CI — green
+
+Run: (link added post-push) `build-test` + `docker-smoke` on PR #5.
+
+**M3 acceptance met:** every fixture domain enriched, zero `unknown` (coverage above); scorecard renders with all its inputs visible (live table + endpoint); weights sanity-checked on the fixture and marked provisional (D-012, real-household tuning pending). AdGuard proves the source-agnostic boundary. GeoIP deferred to the entity-map country per D-011.
