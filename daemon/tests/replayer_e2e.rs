@@ -45,15 +45,17 @@ fn expected_from_fixture() -> Expected {
 }
 
 /// Drives an ingestor against a store until it reports no new events.
-async fn drain(store: &Store, ingestor: &mut FixtureReplayer, max_batches: usize) -> usize {
+/// Returns (batches applied, total events covered by the returned pulses).
+async fn drain(store: &Store, ingestor: &mut FixtureReplayer, max_batches: usize) -> (usize, i64) {
     let mut applied = 0;
+    let mut pulse_events = 0i64;
     for _ in 0..max_batches {
         let cursor = store.cursor(ingestor.source_id()).unwrap();
         let batch = ingestor.poll(cursor.as_deref()).await.unwrap();
         if batch.events.is_empty() && batch.next_cursor == cursor {
             break;
         }
-        store
+        let pulses = store
             .apply_batch(
                 ingestor.source_id(),
                 ingestor.kind(),
@@ -62,9 +64,10 @@ async fn drain(store: &Store, ingestor: &mut FixtureReplayer, max_batches: usize
                 0,
             )
             .unwrap();
+        pulse_events += pulses.iter().map(|p| p.count).sum::<i64>();
         applied += 1;
     }
-    applied
+    (applied, pulse_events)
 }
 
 #[tokio::test]
@@ -76,10 +79,12 @@ async fn full_fixture_ingests_exactly_once_across_a_restart() {
     let db = dir.path().join("e2e.db");
 
     // Run 1: ingest exactly 3 batches (3000 events), then "crash".
+    let pulses_run1;
     {
         let store = Store::open(&db).unwrap();
         let mut replayer = FixtureReplayer::from_path("fixture", &fixture_path(), 1000).unwrap();
-        let applied = drain(&store, &mut replayer, 3).await;
+        let (applied, pulses) = drain(&store, &mut replayer, 3).await;
+        pulses_run1 = pulses;
         assert_eq!(applied, 3);
         let mid = store.stats().unwrap();
         assert_eq!(mid.total_queries, 3000, "3 full batches before the crash");
@@ -89,7 +94,12 @@ async fn full_fixture_ingests_exactly_once_across_a_restart() {
     // the persisted cursor only.
     let store = Store::open(&db).unwrap();
     let mut replayer = FixtureReplayer::from_path("fixture", &fixture_path(), 1000).unwrap();
-    drain(&store, &mut replayer, usize::MAX >> 1).await;
+    let (_, pulses_run2) = drain(&store, &mut replayer, usize::MAX >> 1).await;
+    assert_eq!(
+        pulses_run1 + pulses_run2,
+        expected.total,
+        "SSE pulses cover every ingested event exactly once"
+    );
 
     let stats = store.stats().unwrap();
     assert_eq!(stats.total_queries, expected.total, "zero loss, zero dup");

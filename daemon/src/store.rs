@@ -156,6 +156,61 @@ pub struct DeviceScorecard {
     pub card: Scorecard,
 }
 
+/// One aggregated arc: a canonical device's traffic into one destination
+/// country (M4 globe). Only country-mapped destinations appear as arcs;
+/// unmapped traffic is disclosed via [`ArcsResponse::unmapped_queries`].
+#[derive(Debug, serde::Serialize)]
+pub struct ArcRow {
+    pub device_id: i64,
+    pub device_name: String,
+    pub country: String,
+    pub queries: i64,
+    pub blocked: i64,
+    pub tracker_queries: i64,
+    pub domains: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct ArcsResponse {
+    pub arcs: Vec<ArcRow>,
+    /// Queries to destinations with no mapped country — shown, not hidden
+    /// (partial-visibility honesty, D-001/D-011).
+    pub unmapped_queries: i64,
+}
+
+/// One destination domain behind an arc (click-through level 1).
+#[derive(Debug, serde::Serialize)]
+pub struct ArcDomainRow {
+    pub domain: String,
+    pub entity: Option<String>,
+    pub category: String,
+    pub is_tracker: bool,
+    pub queries: i64,
+    pub blocked: i64,
+    pub last_bucket_hour: i64,
+}
+
+/// A raw hourly rollup bucket (click-through level 2 — the rawest data kept,
+/// D-005).
+#[derive(Debug, serde::Serialize)]
+pub struct RollupRow {
+    pub bucket_hour: i64,
+    pub count: i64,
+    pub blocked_count: i64,
+}
+
+/// A live-ingest hint emitted per (device, domain) after a batch commits;
+/// feeds `/api/stream` (SSE). Best-effort: slow subscribers may drop pulses.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Pulse {
+    pub device_id: i64,
+    pub device_name: String,
+    pub domain: String,
+    pub country: Option<String>,
+    pub is_tracker: bool,
+    pub count: i64,
+}
+
 /// A persisted weekly snapshot row (feeds the M6 week-over-week diff).
 #[derive(Debug, serde::Serialize)]
 pub struct Snapshot {
@@ -254,7 +309,10 @@ impl Store {
     }
 
     /// Applies a polled batch atomically: rollup upserts + device identities +
-    /// cursor + last_ok_at, all in one transaction.
+    /// cursor + last_ok_at, all in one transaction. Returns one [`Pulse`] per
+    /// distinct (device, domain) in the batch for live SSE fan-out — derived
+    /// inside the same transaction so device names and enrichment are the ones
+    /// the batch actually committed.
     pub fn apply_batch(
         &self,
         source_id: &str,
@@ -262,7 +320,7 @@ impl Store {
         events: &[QueryEvent],
         next_cursor: Option<&str>,
         now_ms: i64,
-    ) -> rusqlite::Result<()> {
+    ) -> rusqlite::Result<Vec<Pulse>> {
         // Aggregate rollups in memory: one upsert per (client, domain, hour).
         let mut agg: HashMap<(String, String, i64), (i64, i64)> = HashMap::new();
         // Distinct client identities seen this batch: key -> (mac, ip).
@@ -313,7 +371,64 @@ impl Store {
             )?
             .execute(params![source_id, kind, next_cursor, now_ms])?;
         }
-        tx.commit()
+
+        // Fold per-hour rollups down to per (client, domain) pulse counts.
+        let mut pulse_counts: HashMap<(String, String), i64> = HashMap::new();
+        for ((client_key, domain, _bucket), (n, _)) in &agg {
+            *pulse_counts
+                .entry((client_key.clone(), domain.clone()))
+                .or_insert(0) += n;
+        }
+        // Canonical device per client_key, resolved once each (post-upsert, so
+        // every key exists; merges are honored via the canonical walk).
+        let mut device_cache: HashMap<String, (i64, String)> = HashMap::new();
+        let mut pulses = Vec::with_capacity(pulse_counts.len());
+        for ((client_key, domain), count) in pulse_counts {
+            if !device_cache.contains_key(&client_key) {
+                let id: i64 = tx.query_row(
+                    "SELECT id FROM devices WHERE identity_key = ?1",
+                    params![client_key],
+                    |r| r.get(0),
+                )?;
+                let canon = resolve_canonical(&tx, id)?;
+                let name = tx.query_row(
+                    "SELECT identity_key, oui_vendor, name_user, name_dhcp, name_mdns, mac
+                     FROM devices WHERE id = ?1",
+                    params![canon],
+                    |r| {
+                        let identity_key: String = r.get(0)?;
+                        let vendor: Option<String> = r.get(1)?;
+                        let name_user: Option<String> = r.get(2)?;
+                        let name_dhcp: Option<String> = r.get(3)?;
+                        let name_mdns: Option<String> = r.get(4)?;
+                        let mac: Option<String> = r.get(5)?;
+                        Ok(naming::display_name(
+                            name_user.as_deref(),
+                            name_dhcp.as_deref(),
+                            name_mdns.as_deref(),
+                            vendor.as_deref(),
+                            mac.as_deref(),
+                            &identity_key,
+                        ))
+                    },
+                )?;
+                device_cache.insert(client_key.clone(), (canon, name));
+            }
+            let (device_id, device_name) = device_cache[&client_key].clone();
+            // Same pure enrichment upsert_destination just committed.
+            let e = enrich::enrich(&domain);
+            pulses.push(Pulse {
+                device_id,
+                device_name,
+                domain,
+                country: e.country,
+                is_tracker: e.is_tracker,
+                count,
+            });
+        }
+
+        tx.commit()?;
+        Ok(pulses)
     }
 
     /// Canonical devices with folded-in activity, busiest first.
@@ -369,6 +484,157 @@ impl Store {
                     blocked: r.get(12)?,
                     tracker_queries: r.get(13)?,
                     distinct_domains: r.get(14)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Device→country arcs for the globe: canonical devices' activity grouped
+    /// by destination country, busiest first, over all data (`window = None`)
+    /// or a `[start, end)` millisecond window. Destinations without a mapped
+    /// country are excluded from arcs but disclosed via `unmapped_queries`.
+    pub fn arcs(&self, window: Option<(i64, i64)>) -> rusqlite::Result<ArcsResponse> {
+        let (where_window, wp) = window_clause(window, 1);
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let sql = format!(
+            "SELECT canon.id, canon.identity_key, canon.oui_vendor, canon.name_user,
+                    canon.name_dhcp, canon.name_mdns, canon.mac, dest.country,
+                    SUM(r.count)         AS queries,
+                    SUM(r.blocked_count) AS blocked,
+                    SUM(CASE WHEN dest.is_tracker = 1 THEN r.count ELSE 0 END)
+                                         AS tracker_queries,
+                    COUNT(DISTINCT r.domain) AS domains
+             FROM devices d
+             JOIN devices canon ON canon.id = COALESCE(d.merged_into, d.id)
+             JOIN query_rollups r ON r.client_key = d.identity_key
+             JOIN destinations dest ON dest.domain = r.domain
+             WHERE canon.merged_into IS NULL AND dest.country IS NOT NULL
+             {where_window}
+             GROUP BY canon.id, dest.country
+             ORDER BY queries DESC, canon.id ASC, dest.country ASC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        for p in &wp {
+            params.push(p);
+        }
+        let arcs = stmt
+            .query_map(params.as_slice(), |r| {
+                let identity_key: String = r.get(1)?;
+                let vendor: Option<String> = r.get(2)?;
+                let name_user: Option<String> = r.get(3)?;
+                let name_dhcp: Option<String> = r.get(4)?;
+                let name_mdns: Option<String> = r.get(5)?;
+                let mac: Option<String> = r.get(6)?;
+                Ok(ArcRow {
+                    device_id: r.get(0)?,
+                    device_name: naming::display_name(
+                        name_user.as_deref(),
+                        name_dhcp.as_deref(),
+                        name_mdns.as_deref(),
+                        vendor.as_deref(),
+                        mac.as_deref(),
+                        &identity_key,
+                    ),
+                    country: r.get(7)?,
+                    queries: r.get(8)?,
+                    blocked: r.get(9)?,
+                    tracker_queries: r.get(10)?,
+                    domains: r.get(11)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let unmapped_sql = format!(
+            "SELECT COALESCE(SUM(r.count), 0)
+             FROM query_rollups r
+             LEFT JOIN destinations dest ON dest.domain = r.domain
+             WHERE dest.country IS NULL
+             {where_window}"
+        );
+        let unmapped_queries: i64 =
+            conn.query_row(&unmapped_sql, params.as_slice(), |r| r.get(0))?;
+        Ok(ArcsResponse {
+            arcs,
+            unmapped_queries,
+        })
+    }
+
+    /// Click-through level 1: the domains behind one device→country arc,
+    /// busiest first, folding in merged devices.
+    pub fn arc_domains(
+        &self,
+        device_id: i64,
+        country: &str,
+        window: Option<(i64, i64)>,
+    ) -> rusqlite::Result<Vec<ArcDomainRow>> {
+        let (where_window, wp) = window_clause(window, 3);
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let sql = format!(
+            "SELECT r.domain, dest.entity, dest.category, dest.is_tracker,
+                    SUM(r.count), SUM(r.blocked_count), MAX(r.bucket_hour)
+             FROM query_rollups r
+             JOIN destinations dest ON dest.domain = r.domain
+             WHERE dest.country = ?2
+               AND r.client_key IN
+                   (SELECT identity_key FROM devices WHERE COALESCE(merged_into, id) = ?1)
+             {where_window}
+             GROUP BY r.domain
+             ORDER BY SUM(r.count) DESC, r.domain ASC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&device_id, &country];
+        for p in &wp {
+            params.push(p);
+        }
+        let rows = stmt
+            .query_map(params.as_slice(), |r| {
+                Ok(ArcDomainRow {
+                    domain: r.get(0)?,
+                    entity: r.get(1)?,
+                    category: r.get(2)?,
+                    is_tracker: r.get::<_, i64>(3)? != 0,
+                    queries: r.get(4)?,
+                    blocked: r.get(5)?,
+                    last_bucket_hour: r.get(6)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Click-through level 2: a device's raw hourly rollup buckets for one
+    /// domain — the rawest data retained (D-005), folding in merged devices.
+    pub fn domain_rollups(
+        &self,
+        device_id: i64,
+        domain: &str,
+        window: Option<(i64, i64)>,
+    ) -> rusqlite::Result<Vec<RollupRow>> {
+        let (where_window, wp) = window_clause(window, 3);
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let sql = format!(
+            "SELECT r.bucket_hour, SUM(r.count), SUM(r.blocked_count)
+             FROM query_rollups r
+             WHERE r.domain = ?2
+               AND r.client_key IN
+                   (SELECT identity_key FROM devices WHERE COALESCE(merged_into, id) = ?1)
+             {where_window}
+             GROUP BY r.bucket_hour
+             ORDER BY r.bucket_hour ASC"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut params: Vec<&dyn rusqlite::ToSql> = vec![&device_id, &domain];
+        for p in &wp {
+            params.push(p);
+        }
+        let rows = stmt
+            .query_map(params.as_slice(), |r| {
+                Ok(RollupRow {
+                    bucket_hour: r.get(0)?,
+                    count: r.get(1)?,
+                    blocked_count: r.get(2)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -669,6 +935,22 @@ fn upsert_destination(
     Ok(())
 }
 
+/// Optional `[start, end)` millisecond window predicate on rollup buckets.
+/// `first_param` is the 1-based placeholder index of `start` in the final SQL.
+fn window_clause(window: Option<(i64, i64)>, first_param: usize) -> (String, Vec<i64>) {
+    match window {
+        Some((start, end)) => (
+            format!(
+                "AND r.bucket_hour * 3600000 >= ?{first_param} \
+                 AND r.bucket_hour * 3600000 < ?{}",
+                first_param + 1
+            ),
+            vec![start, end],
+        ),
+        None => (String::new(), vec![]),
+    }
+}
+
 /// Per-device aggregates over all data (`window = None`) or a `[start, end)`
 /// millisecond window, folding in every device merged into `device_id`.
 struct Aggregate {
@@ -683,13 +965,7 @@ fn aggregate(
     device_id: i64,
     window: Option<(i64, i64)>,
 ) -> rusqlite::Result<Aggregate> {
-    let (where_window, wp): (&str, Vec<i64>) = match window {
-        Some((start, end)) => (
-            "AND r.bucket_hour * 3600000 >= ?2 AND r.bucket_hour * 3600000 < ?3",
-            vec![start, end],
-        ),
-        None => ("", vec![]),
-    };
+    let (where_window, wp) = window_clause(window, 2);
     let sql = format!(
         "SELECT COALESCE(SUM(r.count), 0),
                 COALESCE(SUM(r.blocked_count), 0),
@@ -1139,6 +1415,242 @@ mod tests {
             "snapshot re-run must not duplicate"
         );
         assert!(rows2.iter().all(|s| s.volume > 0));
+    }
+
+    // --- M4 arcs + pulses ---
+
+    /// Seeds one device with activity in two countries plus one unmapped
+    /// domain: samsungads.com (KR, tracker, blocked), api.github.com (US,
+    /// first-party), d1.example (no entity → no country).
+    fn seed_arcs() -> Store {
+        let store = Store::open_in_memory().unwrap();
+        let mac = "f0:5c:77:11:22:33";
+        let ip = "192.168.1.20";
+        store
+            .apply_batch(
+                "s1",
+                "fixture",
+                &[
+                    mac_event(0, mac, ip, "samsungads.com", true),
+                    mac_event(1_000, mac, ip, "samsungads.com", true),
+                    mac_event(2_000, mac, ip, "api.github.com", false),
+                    mac_event(3_000, mac, ip, "d1.example", false),
+                ],
+                Some("4"),
+                0,
+            )
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn arcs_group_by_country_and_disclose_unmapped() {
+        let store = seed_arcs();
+        let res = store.arcs(None).unwrap();
+        assert_eq!(res.arcs.len(), 2, "KR and US arcs; d1.example is no arc");
+        let kr = res.arcs.iter().find(|a| a.country == "KR").unwrap();
+        assert_eq!(kr.queries, 2);
+        assert_eq!(kr.blocked, 2);
+        assert_eq!(kr.tracker_queries, 2);
+        assert_eq!(kr.domains, 1);
+        assert_eq!(kr.device_name, "Samsung Electronics · 22:33");
+        let us = res.arcs.iter().find(|a| a.country == "US").unwrap();
+        assert_eq!(us.queries, 1);
+        assert_eq!(us.tracker_queries, 0);
+        assert_eq!(res.unmapped_queries, 1, "d1.example disclosed, not hidden");
+    }
+
+    #[test]
+    fn arcs_fold_merged_devices() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .apply_batch(
+                "s1",
+                "fixture",
+                &[
+                    mac_event(
+                        0,
+                        "f0:5c:77:11:22:33",
+                        "192.168.1.20",
+                        "samsungads.com",
+                        true,
+                    ),
+                    mac_event(
+                        0,
+                        "f4:0f:24:40:50:60",
+                        "192.168.1.31",
+                        "samsungads.com",
+                        false,
+                    ),
+                ],
+                Some("2"),
+                0,
+            )
+            .unwrap();
+        let devices = store.list_devices().unwrap();
+        let (a, b) = (devices[0].id, devices[1].id);
+        store.merge_devices(b, a).unwrap();
+
+        let res = store.arcs(None).unwrap();
+        assert_eq!(res.arcs.len(), 1, "merged devices fold to one arc");
+        assert_eq!(res.arcs[0].device_id, a);
+        assert_eq!(res.arcs[0].queries, 2);
+    }
+
+    #[test]
+    fn arcs_window_is_inclusive_start_exclusive_end() {
+        let store = Store::open_in_memory().unwrap();
+        let hour_ms = 3_600_000i64;
+        // One event in hour bucket 5.
+        store
+            .apply_batch(
+                "s1",
+                "fixture",
+                &[mac_event(
+                    5 * hour_ms + 60_000,
+                    "f0:5c:77:11:22:33",
+                    "192.168.1.20",
+                    "samsungads.com",
+                    false,
+                )],
+                Some("1"),
+                0,
+            )
+            .unwrap();
+        let hits = |w| store.arcs(Some(w)).unwrap().arcs.len();
+        assert_eq!(hits((5 * hour_ms, 6 * hour_ms)), 1, "start is inclusive");
+        assert_eq!(hits((6 * hour_ms, 7 * hour_ms)), 0, "after the bucket");
+        assert_eq!(hits((0, 5 * hour_ms)), 0, "end is exclusive");
+    }
+
+    #[test]
+    fn arc_domains_list_busiest_first_with_enrichment() {
+        let store = seed_arcs();
+        let id = store.list_devices().unwrap()[0].id;
+        let rows = store.arc_domains(id, "KR", None).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].domain, "samsungads.com");
+        assert_eq!(rows[0].entity.as_deref(), Some("Samsung Ads"));
+        assert_eq!(rows[0].category, "advertising");
+        assert!(rows[0].is_tracker);
+        assert_eq!(rows[0].queries, 2);
+        assert_eq!(rows[0].blocked, 2);
+        assert!(store.arc_domains(id, "JP", None).unwrap().is_empty());
+    }
+
+    #[test]
+    fn domain_rollups_return_raw_hourly_buckets() {
+        let store = Store::open_in_memory().unwrap();
+        let mac = "f0:5c:77:11:22:33";
+        let hour_ms = 3_600_000i64;
+        store
+            .apply_batch(
+                "s1",
+                "fixture",
+                &[
+                    mac_event(0, mac, "192.168.1.20", "samsungads.com", true),
+                    mac_event(1_000, mac, "192.168.1.20", "samsungads.com", false),
+                    mac_event(hour_ms, mac, "192.168.1.20", "samsungads.com", false),
+                ],
+                Some("3"),
+                0,
+            )
+            .unwrap();
+        let id = store.list_devices().unwrap()[0].id;
+        let rows = store.domain_rollups(id, "samsungads.com", None).unwrap();
+        assert_eq!(rows.len(), 2, "two hour buckets");
+        assert_eq!(
+            (rows[0].bucket_hour, rows[0].count, rows[0].blocked_count),
+            (0, 2, 1)
+        );
+        assert_eq!(
+            (rows[1].bucket_hour, rows[1].count, rows[1].blocked_count),
+            (1, 1, 0)
+        );
+    }
+
+    #[test]
+    fn apply_batch_returns_enriched_pulses() {
+        let store = seed_arcs();
+        // seed_arcs discards; run a fresh batch to inspect the pulses.
+        let pulses = store
+            .apply_batch(
+                "s1",
+                "fixture",
+                &[
+                    mac_event(
+                        10_000,
+                        "f0:5c:77:11:22:33",
+                        "192.168.1.20",
+                        "samsungads.com",
+                        true,
+                    ),
+                    mac_event(
+                        11_000,
+                        "f0:5c:77:11:22:33",
+                        "192.168.1.20",
+                        "samsungads.com",
+                        true,
+                    ),
+                    mac_event(
+                        12_000,
+                        "f0:5c:77:11:22:33",
+                        "192.168.1.20",
+                        "d1.example",
+                        false,
+                    ),
+                ],
+                Some("7"),
+                0,
+            )
+            .unwrap();
+        assert_eq!(pulses.len(), 2, "one pulse per (device, domain)");
+        assert_eq!(pulses.iter().map(|p| p.count).sum::<i64>(), 3);
+        let ads = pulses
+            .iter()
+            .find(|p| p.domain == "samsungads.com")
+            .unwrap();
+        assert_eq!(ads.country.as_deref(), Some("KR"));
+        assert!(ads.is_tracker);
+        assert_eq!(ads.count, 2);
+        assert_eq!(ads.device_name, "Samsung Electronics · 22:33");
+        let unknown = pulses.iter().find(|p| p.domain == "d1.example").unwrap();
+        assert_eq!(unknown.country, None);
+        assert!(!unknown.is_tracker);
+    }
+
+    #[test]
+    fn pulses_attribute_to_the_canonical_device_after_merge() {
+        let store = Store::open_in_memory().unwrap();
+        let batch = vec![
+            mac_event(0, "f0:5c:77:11:22:33", "192.168.1.20", "a.com", false),
+            mac_event(0, "f4:0f:24:40:50:60", "192.168.1.31", "b.com", false),
+        ];
+        store
+            .apply_batch("s1", "fixture", &batch, Some("1"), 0)
+            .unwrap();
+        let devices = store.list_devices().unwrap();
+        let (a, b) = (devices[0].id, devices[1].id);
+        store.merge_devices(b, a).unwrap();
+
+        // Re-ingest the merged client: its pulse must point at the canonical.
+        let pulses = store
+            .apply_batch(
+                "s1",
+                "fixture",
+                &[mac_event(
+                    1_000,
+                    "f4:0f:24:40:50:60",
+                    "192.168.1.31",
+                    "b.com",
+                    false,
+                )],
+                Some("2"),
+                0,
+            )
+            .unwrap();
+        assert_eq!(pulses.len(), 1);
+        assert_eq!(pulses[0].device_id, a, "pulse follows merged_into");
     }
 
     proptest! {

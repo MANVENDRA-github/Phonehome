@@ -61,6 +61,12 @@ curl -XPOST localhost:8480/api/devices/rename -d '{"id":1,"name":"Living Room TV
 curl -XPOST localhost:8480/api/devices/merge  -d '{"source":2,"into":1}' -H content-type:application/json
 curl localhost:8480/api/devices/1/scorecard   # M3: privacy score + its component inputs
 curl localhost:8480/api/snapshots             # M3: weekly per-device snapshot history
+curl "localhost:8480/api/arcs?window=24"      # M4: device→country arcs (+ unmapped_queries); window in hours, omit for all data
+curl "localhost:8480/api/arcs/domains?device=1&country=US"   # M4: domains behind one arc
+curl "localhost:8480/api/rollups?device=1&domain=api.ring.com"  # M4: raw hourly buckets
+curl localhost:8480/api/config                # M4: home lat/lon + version
+curl -N localhost:8480/api/stream             # M4: SSE pulses while ingestion runs
+# PHONEHOME_HOME_LAT=12.97 PHONEHOME_HOME_LON=77.59  (globe arc origin; unset -> UI hint)
 # AdGuard source (env, alongside/instead of Pi-hole; each is its own source):
 # PHONEHOME_ADGUARD_URL=http://adguard PHONEHOME_ADGUARD_USERNAME=admin PHONEHOME_ADGUARD_PASSWORD=...
 # regenerate the fixture (deterministic, D-009):
