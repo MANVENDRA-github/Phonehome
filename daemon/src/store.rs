@@ -15,8 +15,8 @@
 //! ever upserts identity/last-seen, never `merged_into` or names.
 
 use phonehome_core::score::{ScoreInputs, ScoreWeights, Scorecard};
-use phonehome_core::{QueryEvent, enrich, naming, oui, score};
-use rusqlite::{Connection, OptionalExtension, params};
+use phonehome_core::{enrich, naming, oui, score, QueryEvent};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -997,8 +997,20 @@ mod tests {
                 "s1",
                 "fixture",
                 &[
-                    mac_event(0, "f0:5c:77:11:22:33", "192.168.1.20", "samsungads.com", true),
-                    mac_event(1, "f0:5c:77:11:22:33", "192.168.1.20", "api.github.com", false),
+                    mac_event(
+                        0,
+                        "f0:5c:77:11:22:33",
+                        "192.168.1.20",
+                        "samsungads.com",
+                        true,
+                    ),
+                    mac_event(
+                        1,
+                        "f0:5c:77:11:22:33",
+                        "192.168.1.20",
+                        "api.github.com",
+                        false,
+                    ),
                 ],
                 Some("2"),
                 0,
@@ -1042,17 +1054,35 @@ mod tests {
         .take(80)
         .enumerate()
         {
-            events.push(mac_event(i as i64 * 1000, magnet, "192.168.1.30", dom, i % 3 == 0));
+            events.push(mac_event(
+                i as i64 * 1000,
+                magnet,
+                "192.168.1.30",
+                dom,
+                i % 3 == 0,
+            ));
         }
         // A quiet device: only first-party GitHub.
         let quiet = "dc:41:a9:70:80:90";
         for i in 0..80 {
-            events.push(mac_event(i * 1000, quiet, "192.168.1.32", "api.github.com", false));
+            events.push(mac_event(
+                i * 1000,
+                quiet,
+                "192.168.1.32",
+                "api.github.com",
+                false,
+            ));
         }
-        store.apply_batch("s1", "fixture", &events, Some("1"), 0).unwrap();
+        store
+            .apply_batch("s1", "fixture", &events, Some("1"), 0)
+            .unwrap();
 
         let devices = store.list_devices().unwrap();
-        let magnet_id = devices.iter().find(|d| d.identity_key == magnet).unwrap().id;
+        let magnet_id = devices
+            .iter()
+            .find(|d| d.identity_key == magnet)
+            .unwrap()
+            .id;
         let quiet_id = devices.iter().find(|d| d.identity_key == quiet).unwrap().id;
 
         let magnet_card = store.device_scorecard(magnet_id).unwrap().unwrap();
@@ -1084,12 +1114,18 @@ mod tests {
                     i * 3_600_000,
                     "a8:51:ab:10:20:30",
                     "192.168.1.30",
-                    if i % 2 == 0 { "doubleclick.net" } else { "api.github.com" },
+                    if i % 2 == 0 {
+                        "doubleclick.net"
+                    } else {
+                        "api.github.com"
+                    },
                     i % 4 == 0,
                 )
             })
             .collect();
-        store.apply_batch("s1", "fixture", &evs, Some("50"), 0).unwrap();
+        store
+            .apply_batch("s1", "fixture", &evs, Some("50"), 0)
+            .unwrap();
 
         let first = store.snapshot_all_weeks(0).unwrap();
         let rows1 = store.list_snapshots().unwrap();
@@ -1097,7 +1133,11 @@ mod tests {
         // Running again writes the same set (upsert), not duplicates.
         store.snapshot_all_weeks(0).unwrap();
         let rows2 = store.list_snapshots().unwrap();
-        assert_eq!(rows1.len(), rows2.len(), "snapshot re-run must not duplicate");
+        assert_eq!(
+            rows1.len(),
+            rows2.len(),
+            "snapshot re-run must not duplicate"
+        );
         assert!(rows2.iter().all(|s| s.volume > 0));
     }
 
