@@ -24,6 +24,10 @@ jobs:
           npm ci
           npm run build
 
+      - name: UI unit tests (vitest)
+        working-directory: ui
+        run: npm test
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
