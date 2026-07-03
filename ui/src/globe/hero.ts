@@ -1,22 +1,26 @@
 // ?hero=1 choreography for the 10-second launch GIF (SPEC M4 proof asset):
-// slow auto-rotation while the device filter cycles through the household, one
-// named device at a time, so the GIF shows "labeled devices firing arcs"
-// (RESEARCH §5). Runs until stopped; the Playwright harness records ~12 s.
+// slow auto-rotation, camera pulled back so long-arc apexes stay in frame,
+// and a device-emphasis cycle — the named device's arcs pulse at full
+// brightness while the rest of the household stays dimly visible, so the GIF
+// shows "labeled devices firing arcs" (RESEARCH §5) without losing the
+// worldwide starburst. Runs until stopped; the Playwright harness records it.
 
 import type { GlobeScene } from "./GlobeScene";
 
 export type HeroHooks = {
   scene: GlobeScene;
   getDevices: () => { id: number; name: string }[];
-  setFilter: (ids: Set<number> | null) => void;
   setCallout: (text: string | null) => void;
 };
 
 const ALL_HOUSEHOLD_MS = 2600;
 const PER_DEVICE_MS = 1400;
+const HERO_DISTANCE = 4.2; // long-arc apexes (~1.5R) fit at fov 40
+const HERO_ROTATE = 0.05; // rad/s — ~29° across the 10 s GIF window
 
 export function startHero(hooks: HeroHooks): () => void {
-  hooks.scene.autoRotate = 0.12;
+  hooks.scene.autoRotate = HERO_ROTATE;
+  hooks.scene.setDistance(HERO_DISTANCE);
   let timer = 0;
   let stopped = false;
 
@@ -27,14 +31,14 @@ export function startHero(hooks: HeroHooks): () => void {
       timer = window.setTimeout(cycle, 500);
       return;
     }
-    hooks.setFilter(null);
+    hooks.scene.setDeviceEmphasis(null);
     hooks.setCallout("your household");
     let i = 0;
     const step = () => {
       if (stopped) return;
       if (i < devices.length) {
         const d = devices[i++];
-        hooks.setFilter(new Set([d.id]));
+        hooks.scene.setDeviceEmphasis(new Set([d.id]));
         hooks.setCallout(d.name);
         timer = window.setTimeout(step, PER_DEVICE_MS);
       } else {
@@ -49,7 +53,8 @@ export function startHero(hooks: HeroHooks): () => void {
     stopped = true;
     window.clearTimeout(timer);
     hooks.scene.autoRotate = 0.04;
-    hooks.setFilter(null);
+    hooks.scene.setDistance(2.6);
+    hooks.scene.setDeviceEmphasis(null);
     hooks.setCallout(null);
   };
 }

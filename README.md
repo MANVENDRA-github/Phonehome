@@ -2,9 +2,11 @@
 
 **Meet everything your house talks to.** Phonehome is a self-hosted privacy radar for your home network: it reads the DNS logs you already have (Pi-hole, AdGuard Home), figures out *which device* asked for *what*, and shows you — on a live 3D globe and per-device scorecards — exactly where your smart TV, doorbell, and every other gadget phones home.
 
-> **Status: pre-v1 — M4 (the globe) in progress: backend + globe UI built.** The WebGPU globe (WebGL fallback) now renders live device→country arcs — one instanced draw call, tracker-share coloring, device filter rail, and click-through from any arc to the domains behind it and their raw hourly rollups in two clicks — with SSE live pulses as ingestion commits. Remaining for M4: the Playwright smoke/perf harness, measured FPS numbers, and the hero GIF (evidence lands in [PROOF.md](PROOF.md) §M4). Star/watch to follow along.
+> **Status: pre-v1 — M4 (the globe) done.** The WebGPU globe (WebGL fallback) renders live device→country arcs — one instanced draw call, tracker-share coloring, device filter rail, click-through from any arc to its domains and their raw hourly rollups in two clicks, SSE live pulses as ingestion commits. Measured smooth at 10,000 arcs on integrated graphics (frame-time tables in [PROOF.md](PROOF.md) §M4), CI-guarded by a Playwright smoke, and captured in the hero GIF above. Next: [SPEC.md](SPEC.md) M5 — ship it. Star/watch to follow along.
 
-<!-- HERO: 10-second GIF goes here at M4 — the globe firing arcs from "Samsung TV" to ad servers across the planet. PROOF rule: the GIF must render real data from a real network. -->
+![Phonehome globe — labeled household devices firing arcs at their real destination countries](docs/hero.gif)
+
+<sub>**Replayed fixture** — this recording replays the committed synthetic-realistic fixture (real vendor/tracker hostnames, deterministic generator; see [D-009](DECISIONS.md)) through the real daemon and globe. It will be re-recorded from an anonymized real-household capture before launch.</sub>
 
 ## What it does
 

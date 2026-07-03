@@ -29,7 +29,7 @@ Ground rules for every milestone:
 **Accept:** every fixture domain enriched (or explicitly `unknown`); scorecard renders with its inputs visible; **spike:** scorecards computed on ≥1 real household's data and sanity-reviewed — weights adjusted and logged as a D-xxx.
 **Proof:** enrichment coverage stats + a real (redacted) scorecard screenshot. PROOF.md §M3.
 
-## M4 — The globe
+## M4 — The globe ✅ (done 2026-07-04 — evidence: PROOF.md §M4; ≥10k arcs smooth on integrated via the WebGPU path with the WebGL-fallback stress numbers disclosed; hero GIF carries the D-009 "replayed fixture" label pending a real capture)
 **Deliverable:** WebGPU globe (WebGL fallback): instanced device→country arcs, tracker coloring, device filter, arc click-through → domains → rollups; SSE live updates (S-1).
 **Accept:** smooth on integrated graphics at the fixture's arc volume — measured, threshold set by the perf spike (target ≥10k visible arcs); click-through reaches raw rollup data in ≤2 clicks.
 **Proof:** FPS/frame-time numbers on named hardware (discrete + integrated) + **the 10-second real-data hero GIF** recorded via the Playwright harness. PROOF.md §M4. *This GIF is the launch asset — M4 is the go/no-go gate for the distribution plan (RESEARCH.md §5).*

@@ -229,11 +229,12 @@ export class ArcsMesh {
     }
   }
 
-  /** Show/hide per instance without rebuilding geometry (device filter). */
-  setVisible(visible: (index: number) => boolean) {
+  /** Per-instance opacity without rebuilding geometry: 0 hides (device
+   * filter), fractional values dim (hero emphasis keeps context visible). */
+  setVisible(opacity: (index: number) => number) {
     const state = this.aState.array as Float32Array;
     for (let i = 0; i < this.count; i++) {
-      state[i * 2] = visible(i) ? 1 : 0;
+      state[i * 2] = opacity(i);
     }
     this.aState.needsUpdate = true;
   }
