@@ -100,6 +100,7 @@ fn app(state: AppState) -> Router {
         .route("/api/devices/merge", post(merge_devices))
         .route("/api/devices/{id}/scorecard", get(scorecard))
         .route("/api/snapshots", get(snapshots))
+        .route("/api/diffs", get(diffs))
         .route("/api/sources", get(list_sources).post(create_source))
         .route("/api/sources/test", post(test_source))
         .route("/api/arcs", get(arcs))
@@ -202,6 +203,18 @@ async fn snapshots(State(store): State<Store>) -> Result<Json<Vec<store::Snapsho
         .map_err(internal_error)?
         .map_err(internal_error)?;
     Ok(Json(rows))
+}
+
+/// Cap on the "new this week" domain list per device (M6 diff). Enough to tell
+/// the story ("+6 tracker domains: …") without unbounded payloads.
+const DIFF_NEW_DOMAIN_LIMIT: usize = 20;
+
+async fn diffs(State(store): State<Store>) -> Result<Json<store::DiffsResponse>, Response> {
+    let res = tokio::task::spawn_blocking(move || store.week_diffs(DIFF_NEW_DOMAIN_LIMIT))
+        .await
+        .map_err(internal_error)?
+        .map_err(internal_error)?;
+    Ok(Json(res))
 }
 
 async fn config(State(state): State<AppState>) -> Result<Json<ApiConfig>, Response> {
@@ -1125,6 +1138,22 @@ mod tests {
         let v = json_body(res).await;
         assert!(!v.as_array().unwrap().is_empty());
         assert!(v[0]["score"].is_number());
+    }
+
+    #[tokio::test]
+    async fn diffs_endpoint_returns_shape() {
+        let store = seed_store();
+        store.snapshot_all_weeks(0).unwrap();
+        let res = app_for(store)
+            .oneshot(Request::get("/api/diffs").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_body(res).await;
+        assert!(v["devices"].is_array());
+        // seed_store is a single week → no previous week to compare against.
+        assert!(v["previous_week_start"].is_null());
+        assert!(v["current_week_start"].is_number());
     }
 
     // --- M5 setup wizard: config surface + sources endpoints ---

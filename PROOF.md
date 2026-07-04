@@ -385,3 +385,43 @@ live pulses; click-through reaches raw rollup data in 2 clicks (asserted in CI);
 tables above, hardware named from adapter info); the 10-second hero GIF exists,
 recorded through the Playwright harness from a real daemon run with the fixture
 label in-frame.
+
+---
+
+## §M5 — Ship (in progress)
+
+Landing across focused PRs (setup wizard → fixture reshape → weekly diff →
+hardening/release). Evidence accrues per PR; the timed clean-install transcript
+and release land with the final PR.
+
+### Weekly diff — real week-over-week delta (SPEC M5 acceptance)
+
+Live `GET /api/diffs` against the real daemon replaying the reshaped fixture
+(`fixtures/household-01.jsonl`, two epoch-aligned weeks; fresh temp DB, one
+server-side snapshot cycle). This is **replayer time-warp** — "this week" is the
+fixture's newest week (2026-06-25 → 07-02), labeled per D-009 (the app's
+always-on fixture badge carries the label in any diff media):
+
+```
+current_week_start: 2026-06-25 | previous_week_start: 2026-06-18
+devices in diff: 18
+
+Samsung Electronics · 22:33
+  score:           47 -> 52   (delta +5, risk rose → rose chip)
+  tracker_domains:  5 -> 7    (+2)
+  new this week:
+    [tracker] nmp.samsungqbe.com  KR  33
+    [tracker] samsungadhub.com    KR  32
+```
+
+The two new trackers are the deliberate week-2 injection (PR-3); they appear in
+the diff's "new this week" list and not in week 1 — the "+2 new tracker domains
+this week" headline, on real (synthetic-labeled) data. New-domain identity comes
+from `query_rollups` week windows (snapshots store only counts).
+
+Backend `store::week_diffs` is unit-tested (two-week seed asserts the new tracker
+appears and week-1 domains don't; single-week → no comparison; empty → empty);
+`ui/src/diff.ts` risk-delta direction is vitest-tested (rising score = rose);
+`e2e/diff.spec.ts` asserts the panel renders the delta + new-tracker list.
+`cargo test` 62 daemon + 24 e2e/store green; `npm test` 31 vitest; `npm run e2e`
+8 pass; clippy `-D warnings` + fmt clean.

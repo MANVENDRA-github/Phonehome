@@ -110,6 +110,38 @@ export type Stats = {
   sources: SourceState[];
 };
 
+// Weekly diff (M6): week-over-week change per device.
+export type SnapshotVals = {
+  distinct_domains: number;
+  tracker_domains: number;
+  distinct_entities: number;
+  distinct_countries: number;
+  volume: number;
+  blocked: number;
+  score: number;
+};
+
+export type NewDomain = {
+  domain: string;
+  is_tracker: boolean;
+  country: string | null;
+  queries: number;
+};
+
+export type WeekDiff = {
+  device_id: number;
+  device_name: string;
+  current: SnapshotVals;
+  previous: SnapshotVals | null;
+  new_domains: NewDomain[];
+};
+
+export type DiffsResponse = {
+  current_week_start: number | null;
+  previous_week_start: number | null;
+  devices: WeekDiff[];
+};
+
 async function getJson<T>(url: string): Promise<T> {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`${url}: ${r.status}`);
@@ -122,6 +154,7 @@ export const api = {
   stats: () => getJson<Stats>("/api/stats"),
   devices: () => getJson<Device[]>("/api/devices"),
   scorecard: (id: number) => getJson<Scorecard>(`/api/devices/${id}/scorecard`),
+  diffs: () => getJson<DiffsResponse>("/api/diffs"),
   arcs: (windowHours?: number) =>
     getJson<ArcsResponse>(windowHours ? `/api/arcs?window=${windowHours}` : "/api/arcs"),
   arcDomains: (device: number, country: string, windowHours?: number) =>
