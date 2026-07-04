@@ -490,10 +490,13 @@ clean-machine evidence** — it runs `docker compose up -d --build` on a fresh
 ubuntu runner and probes `/api/health` + the served page against the hardened
 compose file.
 
-CI run (this PR): _<filled after the PR's CI goes green>_ — `build-test` (UI
-build + vitest + fmt + clippy + `cargo test`) · `playwright-smoke` (globe +
-wizard + diff specs on SwiftShader WebGL) · `docker-smoke` (hardened container
-builds, starts, serves).
+CI run (full M5 stack, PR #14):
+https://github.com/MANVENDRA-github/Phonehome/actions/runs/28692543848 —
+`build-test` pass (1m1s: UI build + vitest + fmt + clippy + `cargo test`) ·
+`playwright-smoke` pass (1m16s: globe + wizard + diff specs, 8 total, on
+SwiftShader WebGL) · `docker-smoke` pass (2m27s: the **hardened** container —
+pinned `rust:1.94-slim`, `read_only` root + `cap_drop: ALL` +
+`no-new-privileges` — builds, starts, and serves `/api/health` + the page).
 
 **M5 acceptance:** first-run wizard takes a source and lands data at runtime in
 ≤ one poll interval (well under 60 s), verified live against a mock Pi-hole; the
