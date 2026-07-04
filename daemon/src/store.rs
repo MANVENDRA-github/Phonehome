@@ -358,6 +358,9 @@ impl Store {
     fn init(conn: Connection) -> rusqlite::Result<Self> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // Keep SQLite temp data in memory so nothing is written outside /data —
+        // the hardened container runs with a read_only root filesystem (D-006).
+        conn.pragma_update(None, "temp_store", "MEMORY")?;
         conn.execute_batch(SCHEMA)?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),

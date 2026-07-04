@@ -2,7 +2,7 @@
 
 **Meet everything your house talks to.** Phonehome is a self-hosted privacy radar for your home network: it reads the DNS logs you already have (Pi-hole, AdGuard Home), figures out *which device* asked for *what*, and shows you — on a live 3D globe and per-device scorecards — exactly where your smart TV, doorbell, and every other gadget phones home.
 
-> **Status: pre-v1 — M4 (the globe) done; M5 (ship) in progress.** The WebGPU globe (WebGL fallback) renders live device→country arcs — one instanced draw call, tracker-share coloring, device filter rail, click-through from any arc to its domains and their raw hourly rollups in two clicks, SSE live pulses as ingestion commits. Measured smooth at 10,000 arcs on integrated graphics (frame-time tables in [PROOF.md](PROOF.md) §M4), CI-guarded by a Playwright smoke, and captured in the hero GIF above. M5 in progress: a **first-run setup wizard** (paste your Pi-hole/AdGuard URL + token → data starts flowing, no restart) now lands the backend + UI. Next up in M5: weekly-diff view, hardened compose, and the v0.1.0 release. Star/watch to follow along.
+> **Status: v0.1.0 — M5 (ship) complete.** One `docker compose up`, a first-run setup wizard (paste your Pi-hole/AdGuard URL + token → data flows in seconds, no restart), the WebGPU globe (WebGL fallback) of live device→country arcs, per-device privacy scorecards, and a weekly diff that shows what changed. Measured smooth at 10,000 arcs on integrated graphics (frame-time tables in [PROOF.md](PROOF.md) §M4), guarded in CI by a Playwright smoke + a container smoke, evidence in [PROOF.md](PROOF.md). The demo media below replays a synthetic-labeled fixture pending a real-household capture ([D-009](DECISIONS.md)). Star/watch to follow along.
 
 ![Phonehome globe — labeled household devices firing arcs at their real destination countries](docs/hero.gif)
 
@@ -18,15 +18,23 @@
 
 **Everything stays local.** No cloud, no accounts, no telemetry. Your DNS history never leaves your network.
 
-## Planned quickstart (v1 target)
+## Quickstart
+
+Two commands, under five minutes:
 
 ```sh
-# not yet functional — v1 install contract, see SPEC.md M5
-docker compose up -d
-# open http://localhost:8480, point it at your Pi-hole/AdGuard, meet your house
+git clone https://github.com/MANVENDRA-github/Phonehome.git && cd Phonehome
+docker compose up -d --build
 ```
 
-Install friction budget: **two commands, under five minutes** — that's a hard v1 requirement, not an aspiration.
+Open **http://localhost:8480**. On first run the **setup wizard** asks for your Pi-hole or AdGuard Home address and app password — click *Test connection*, then *Start*, and the globe fills in as your DNS logs are read. Nothing leaves your machine.
+
+- **Pi-hole v6:** address like `http://pi.hole` (or `http://<ip>`), and the app password from *Settings → Web interface / API*.
+- **AdGuard Home:** address like `http://<ip>:3000` plus your admin username and password.
+
+Just trying it out? The repo ships a synthetic-realistic fixture — run the daemon with `PHONEHOME_FIXTURE=fixtures/household-01.jsonl` and skip the wizard. See [docs/INSTALL.md](docs/INSTALL.md) for details (updating, LAN access, GeoLite2, strict-local, backups).
+
+By default the container binds to `127.0.0.1` only. To reach the globe from another device on your LAN, see the install guide.
 
 ## Why this doesn't exist yet
 

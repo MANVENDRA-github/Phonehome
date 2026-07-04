@@ -640,6 +640,33 @@ async fn shutdown_signal() {
     tracing::info!("shutting down");
 }
 
+/// `phonehome-daemon --healthcheck`: probe the local `/api/health` and exit
+/// 0/1. Used by the Docker/compose HEALTHCHECK so the slim runtime image needs
+/// no curl/wget, and it works under a `read_only` root filesystem.
+async fn run_healthcheck() -> i32 {
+    let port: u16 = std::env::var("PHONEHOME_PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(DEFAULT_PORT);
+    let url = format!("http://127.0.0.1:{port}/api/health");
+    match reqwest::Client::new()
+        .get(&url)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => 0,
+        Ok(r) => {
+            eprintln!("healthcheck: HTTP {}", r.status());
+            1
+        }
+        Err(e) => {
+            eprintln!("healthcheck: {e}");
+            1
+        }
+    }
+}
+
 fn now_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -650,6 +677,12 @@ fn now_ms() -> i64 {
 
 #[tokio::main]
 async fn main() {
+    // Health-probe mode (Docker/compose HEALTHCHECK) — return before starting
+    // the server or touching the DB.
+    if std::env::args().any(|a| a == "--healthcheck") {
+        std::process::exit(run_healthcheck().await);
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -667,6 +700,12 @@ async fn main() {
     }
     let store = Store::open(&db_path)
         .unwrap_or_else(|e| panic!("open sqlite db {}: {e}", db_path.display()));
+    // Credentials live in this file (D-014): keep it owner-only on Unix.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&db_path, std::fs::Permissions::from_mode(0o600));
+    }
     tracing::info!(db = %db_path.display(), "store opened");
 
     let (pulses, _) = broadcast::channel::<store::Pulse>(PULSE_BUFFER);
