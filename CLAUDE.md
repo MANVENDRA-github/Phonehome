@@ -64,7 +64,10 @@ curl localhost:8480/api/snapshots             # M3: weekly per-device snapshot h
 curl "localhost:8480/api/arcs?window=24"      # M4: device→country arcs (+ unmapped_queries); window in hours, omit for all data
 curl "localhost:8480/api/arcs/domains?device=1&country=US"   # M4: domains behind one arc
 curl "localhost:8480/api/rollups?device=1&domain=api.ring.com"  # M4: raw hourly buckets
-curl localhost:8480/api/config                # M4: home lat/lon + version
+curl localhost:8480/api/config                # M4/M5: home lat/lon + version + needs_setup (first-run wizard flag)
+curl localhost:8480/api/sources               # M5: configured sources (secrets stripped — D-014)
+curl -XPOST localhost:8480/api/sources/test -d '{"kind":"pihole","base_url":"http://pi.hole","secret":"..."}' -H content-type:application/json  # M5: validate, no persist
+curl -XPOST localhost:8480/api/sources -d '{"kind":"pihole","base_url":"http://pi.hole","secret":"...","home_lat":12.97,"home_lon":77.59}' -H content-type:application/json  # M5: probe→persist→start at runtime (adguard also needs "username")
 curl -N localhost:8480/api/stream             # M4: SSE pulses while ingestion runs
 # PHONEHOME_HOME_LAT=12.97 PHONEHOME_HOME_LON=77.59  (globe arc origin; unset -> UI hint)
 # globe URL params: ?gl=1 force WebGL · ?hud=1 frame stats · ?stress=N synthetic-arc benchmark · ?hero=1 GIF choreography

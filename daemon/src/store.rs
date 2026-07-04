@@ -78,8 +78,22 @@ CREATE TABLE IF NOT EXISTS snapshots (
     computed_at        INTEGER NOT NULL,
     PRIMARY KEY (device_id, week_start)
 );
-INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '3');
-UPDATE meta SET value = '3' WHERE key = 'schema_version';
+-- Persisted source connection config written by the M5 setup wizard (schema v4).
+-- Separate from `sources` (which is hot-path cursor/last-ok state rewritten every
+-- batch). `secret` is the Pi-hole password / AdGuard password, stored plaintext in
+-- this local-only DB (D-014) and NEVER returned by any API.
+CREATE TABLE IF NOT EXISTS source_config (
+    id         TEXT PRIMARY KEY,
+    kind       TEXT NOT NULL,
+    base_url   TEXT NOT NULL,
+    username   TEXT,
+    secret     TEXT NOT NULL,
+    interval_s INTEGER NOT NULL,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL
+);
+INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '4');
+UPDATE meta SET value = '4' WHERE key = 'schema_version';
 ";
 
 /// Millis per week; snapshot buckets align to whole weeks from the unix epoch.
@@ -223,6 +237,43 @@ pub struct Snapshot {
     pub volume: i64,
     pub blocked: i64,
     pub score: i64,
+}
+
+/// A persisted source connection config (M5 wizard). Internal — carries the
+/// plaintext `secret` for boot-time reconstruction of the ingestor, so it must
+/// NOT be serialized to any API response (use [`SourceSummary`] for that).
+#[derive(Debug, Clone)]
+pub struct SourceConfigRow {
+    pub id: String,
+    pub kind: String,
+    pub base_url: String,
+    pub username: Option<String>,
+    pub secret: String,
+    pub interval_s: u64,
+    pub enabled: bool,
+}
+
+/// What the wizard sends to persist a source. `secret` is the Pi-hole/AdGuard
+/// password; `interval_s` falls back to a sane default when omitted.
+#[derive(Debug, Clone)]
+pub struct SourceConfigInput {
+    pub kind: String,
+    pub base_url: String,
+    pub username: Option<String>,
+    pub secret: String,
+    pub interval_s: u64,
+}
+
+/// API-facing view of a configured source — deliberately WITHOUT the secret
+/// (D-014: credentials never leave the box via any endpoint).
+#[derive(Debug, serde::Serialize)]
+pub struct SourceSummary {
+    pub id: String,
+    pub kind: String,
+    pub base_url: String,
+    pub username: Option<String>,
+    pub interval_s: u64,
+    pub enabled: bool,
 }
 
 /// Errors from device mutations that the API maps to 400/404.
@@ -766,6 +817,125 @@ impl Store {
         Ok(rows)
     }
 
+    /// Persists a wizard source config under a freshly allocated id
+    /// (`{kind}-main` if free, else `{kind}-2`, `-3`, …) and returns its
+    /// summary (no secret). Upserts by id are not needed — each save is a new
+    /// source; editing is out of M5 scope.
+    pub fn save_source_config(&self, input: &SourceConfigInput) -> rusqlite::Result<SourceSummary> {
+        let now = store_now_ms();
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let existing: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT id FROM source_config")?;
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let id = alloc_source_id(&input.kind, &existing);
+        conn.execute(
+            "INSERT INTO source_config
+                 (id, kind, base_url, username, secret, interval_s, enabled, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, ?7)",
+            params![
+                id,
+                input.kind,
+                input.base_url,
+                input.username,
+                input.secret,
+                input.interval_s as i64,
+                now,
+            ],
+        )?;
+        Ok(SourceSummary {
+            id,
+            kind: input.kind.clone(),
+            base_url: input.base_url.clone(),
+            username: input.username.clone(),
+            interval_s: input.interval_s,
+            enabled: true,
+        })
+    }
+
+    /// Full persisted source configs INCLUDING secrets — for boot-time ingestor
+    /// reconstruction only. Never serialize these to a response.
+    pub fn list_source_configs(&self) -> rusqlite::Result<Vec<SourceConfigRow>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, kind, base_url, username, secret, interval_s, enabled
+             FROM source_config ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(SourceConfigRow {
+                    id: r.get(0)?,
+                    kind: r.get(1)?,
+                    base_url: r.get(2)?,
+                    username: r.get(3)?,
+                    secret: r.get(4)?,
+                    interval_s: r.get::<_, i64>(5)? as u64,
+                    enabled: r.get::<_, i64>(6)? != 0,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// API-facing list of configured sources — secrets stripped (D-014).
+    pub fn list_source_summaries(&self) -> rusqlite::Result<Vec<SourceSummary>> {
+        Ok(self
+            .list_source_configs()?
+            .into_iter()
+            .map(|c| SourceSummary {
+                id: c.id,
+                kind: c.kind,
+                base_url: c.base_url,
+                username: c.username,
+                interval_s: c.interval_s,
+                enabled: c.enabled,
+            })
+            .collect())
+    }
+
+    /// Number of persisted source configs — feeds first-run detection.
+    pub fn source_config_count(&self) -> rusqlite::Result<i64> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.query_row("SELECT COUNT(*) FROM source_config", [], |r| r.get(0))
+    }
+
+    /// Persists the home globe origin (wizard "place your home"), stored in the
+    /// `meta` KV so it survives restarts alongside env `PHONEHOME_HOME_LAT/LON`.
+    pub fn set_home(&self, lat: f64, lon: f64) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('home_lat', ?1)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![lat.to_string()],
+        )?;
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('home_lon', ?1)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![lon.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Reads the persisted home origin, if set and in range. `None` otherwise.
+    pub fn get_home(&self) -> rusqlite::Result<Option<(f64, f64)>> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let read = |key: &str| -> rusqlite::Result<Option<f64>> {
+            let raw: Option<String> = conn
+                .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+                    r.get(0)
+                })
+                .optional()?;
+            Ok(raw.and_then(|s| s.parse::<f64>().ok()))
+        };
+        match (read("home_lat")?, read("home_lon")?) {
+            (Some(lat), Some(lon)) if lat.abs() <= 90.0 && lon.abs() <= 180.0 => {
+                Ok(Some((lat, lon)))
+            }
+            _ => Ok(None),
+        }
+    }
+
     /// Sets (or, with a blank name, clears) a device's user-assigned name.
     /// Returns false if the id doesn't exist.
     pub fn rename_device(&self, id: i64, name: &str) -> rusqlite::Result<bool> {
@@ -891,6 +1061,24 @@ fn upsert_device(
         now_ms,
     ])?;
     Ok(())
+}
+
+/// Allocates a source id for a new wizard config: `{kind}-main` if unused, else
+/// the lowest free `{kind}-N` (N ≥ 2). Mirrors the env source ids
+/// (`pihole-main`/`adguard-main`) so env- and wizard-configured sources share a
+/// namespace and never collide.
+fn alloc_source_id(kind: &str, existing: &[String]) -> String {
+    let main = format!("{kind}-main");
+    if !existing.iter().any(|e| e == &main) {
+        return main;
+    }
+    for n in 2.. {
+        let candidate = format!("{kind}-{n}");
+        if !existing.iter().any(|e| e == &candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("infinite id space")
 }
 
 fn device_exists(tx: &rusqlite::Transaction<'_>, id: i64) -> rusqlite::Result<bool> {
@@ -1651,6 +1839,120 @@ mod tests {
             .unwrap();
         assert_eq!(pulses.len(), 1);
         assert_eq!(pulses[0].device_id, a, "pulse follows merged_into");
+    }
+
+    // --- M5 source config + home (schema v4) ---
+
+    #[test]
+    fn migration_v3_to_v4_adds_source_config_and_preserves_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("v3.db");
+        // A pre-M5 (v3) db: no source_config table, one rollup row.
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE query_rollups (source_id TEXT, client_key TEXT, domain TEXT,
+                     bucket_hour INTEGER, count INTEGER, blocked_count INTEGER,
+                     PRIMARY KEY(source_id, client_key, domain, bucket_hour));
+                 INSERT INTO meta VALUES ('schema_version', '3');
+                 INSERT INTO query_rollups VALUES ('s1', '192.168.1.9', 'a.com', 1, 4, 0);",
+            )
+            .unwrap();
+        }
+        // Opening runs the additive migration.
+        let store = Store::open(&db).unwrap();
+        assert_eq!(store.source_config_count().unwrap(), 0, "new table, empty");
+        assert_eq!(
+            store.stats().unwrap().total_queries,
+            4,
+            "old rollup data preserved"
+        );
+        let conn = store.conn.lock().unwrap();
+        let v: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(v, "4", "schema_version bumped");
+    }
+
+    #[test]
+    fn source_config_round_trips_and_allocates_ids() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.source_config_count().unwrap(), 0);
+        let mk =
+            |kind: &str, url: &str, user: Option<&str>, secret: &str, iv: u64| SourceConfigInput {
+                kind: kind.into(),
+                base_url: url.into(),
+                username: user.map(str::to_owned),
+                secret: secret.into(),
+                interval_s: iv,
+            };
+        let s1 = store
+            .save_source_config(&mk("pihole", "http://pi.hole", None, "pw1", 15))
+            .unwrap();
+        assert_eq!(s1.id, "pihole-main");
+        let s2 = store
+            .save_source_config(&mk("pihole", "http://pi2", None, "pw2", 30))
+            .unwrap();
+        assert_eq!(s2.id, "pihole-2", "second pihole gets a numbered id");
+        let s3 = store
+            .save_source_config(&mk("adguard", "http://ag", Some("admin"), "pw3", 15))
+            .unwrap();
+        assert_eq!(s3.id, "adguard-main");
+
+        // Internal list carries secrets (for boot-time ingestor reconstruction).
+        let cfgs = store.list_source_configs().unwrap();
+        assert_eq!(cfgs.len(), 3);
+        assert!(cfgs
+            .iter()
+            .any(|c| c.id == "pihole-main" && c.secret == "pw1" && c.interval_s == 15));
+        // Summaries are the API-facing view — no secret field exists on the type.
+        let sums = store.list_source_summaries().unwrap();
+        assert_eq!(sums.len(), 3);
+        let ag = sums.iter().find(|s| s.id == "adguard-main").unwrap();
+        assert_eq!(ag.username.as_deref(), Some("admin"));
+        assert_eq!(ag.base_url, "http://ag");
+        assert_eq!(store.source_config_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn home_round_trips_and_rejects_out_of_range() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.get_home().unwrap().is_none(), "unset by default");
+        store.set_home(12.97, 77.59).unwrap();
+        assert_eq!(store.get_home().unwrap(), Some((12.97, 77.59)));
+        // Overwrite wins.
+        store.set_home(40.71, -74.0).unwrap();
+        assert_eq!(store.get_home().unwrap(), Some((40.71, -74.0)));
+        // An out-of-range persisted pair reads back as None (defensive).
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute("UPDATE meta SET value='999' WHERE key='home_lat'", [])
+                .unwrap();
+        }
+        assert!(store.get_home().unwrap().is_none());
+    }
+
+    #[test]
+    fn alloc_source_id_fills_lowest_free_slot() {
+        assert_eq!(alloc_source_id("pihole", &[]), "pihole-main");
+        assert_eq!(
+            alloc_source_id("pihole", &["pihole-main".into()]),
+            "pihole-2"
+        );
+        assert_eq!(
+            alloc_source_id("pihole", &["pihole-main".into(), "pihole-2".into()]),
+            "pihole-3"
+        );
+        // Different kinds share the namespace but not each other's ids.
+        assert_eq!(
+            alloc_source_id("adguard", &["pihole-main".into()]),
+            "adguard-main"
+        );
     }
 
     proptest! {
