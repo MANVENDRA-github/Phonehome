@@ -69,6 +69,19 @@ export type RollupRow = {
 export type Config = {
   home: { lat: number; lon: number } | null;
   version: string;
+  // True on a fresh install with no source configured — show the setup wizard (M5).
+  needs_setup: boolean;
+};
+
+// A configured source as returned by GET /api/sources — never carries the
+// secret (D-014).
+export type SourceSummary = {
+  id: string;
+  kind: string;
+  base_url: string;
+  username: string | null;
+  interval_s: number;
+  enabled: boolean;
 };
 
 export type Pulse = {
@@ -132,5 +145,20 @@ export const api = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ source, into }),
+    }),
+  sources: () => getJson<SourceSummary[]>("/api/sources"),
+  // Setup wizard (M5): both return the raw Response so the caller can read the
+  // status and the {ok|error} body. `body` is built by src/setup.ts.
+  testSource: (body: Record<string, unknown>) =>
+    fetch("/api/sources/test", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  saveSource: (body: Record<string, unknown>) =>
+    fetch("/api/sources", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
     }),
 };

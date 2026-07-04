@@ -2,7 +2,7 @@
 
 **Meet everything your house talks to.** Phonehome is a self-hosted privacy radar for your home network: it reads the DNS logs you already have (Pi-hole, AdGuard Home), figures out *which device* asked for *what*, and shows you — on a live 3D globe and per-device scorecards — exactly where your smart TV, doorbell, and every other gadget phones home.
 
-> **Status: pre-v1 — M4 (the globe) done.** The WebGPU globe (WebGL fallback) renders live device→country arcs — one instanced draw call, tracker-share coloring, device filter rail, click-through from any arc to its domains and their raw hourly rollups in two clicks, SSE live pulses as ingestion commits. Measured smooth at 10,000 arcs on integrated graphics (frame-time tables in [PROOF.md](PROOF.md) §M4), CI-guarded by a Playwright smoke, and captured in the hero GIF above. Next: [SPEC.md](SPEC.md) M5 — ship it. Star/watch to follow along.
+> **Status: pre-v1 — M4 (the globe) done; M5 (ship) in progress.** The WebGPU globe (WebGL fallback) renders live device→country arcs — one instanced draw call, tracker-share coloring, device filter rail, click-through from any arc to its domains and their raw hourly rollups in two clicks, SSE live pulses as ingestion commits. Measured smooth at 10,000 arcs on integrated graphics (frame-time tables in [PROOF.md](PROOF.md) §M4), CI-guarded by a Playwright smoke, and captured in the hero GIF above. M5 in progress: a **first-run setup wizard** (paste your Pi-hole/AdGuard URL + token → data starts flowing, no restart) now lands the backend + UI. Next up in M5: weekly-diff view, hardened compose, and the v0.1.0 release. Star/watch to follow along.
 
 ![Phonehome globe — labeled household devices firing arcs at their real destination countries](docs/hero.gif)
 

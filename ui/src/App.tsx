@@ -5,6 +5,7 @@ import { DrillPanel, type DrillSelection } from "./components/DrillPanel";
 import { FilterRail } from "./components/FilterRail";
 import { FixtureBadge } from "./components/FixtureBadge";
 import { Hud } from "./components/Hud";
+import { SetupWizard } from "./components/SetupWizard";
 import { startHero } from "./globe/hero";
 import type { GlobeScene } from "./globe/GlobeScene";
 import { useSSE } from "./useSSE";
@@ -90,6 +91,14 @@ export default function App() {
       .then(setArcs)
       .catch(() => {});
   }, [windowHours]);
+
+  // After the wizard saves a source: refetch config (flips needs_setup off) and
+  // pull the first devices/arcs so the globe paints the moment data lands.
+  const reloadAfterSetup = useCallback(() => {
+    api.config().then(setConfig).catch(() => {});
+    refreshDevices();
+    refreshArcs();
+  }, [refreshDevices, refreshArcs]);
 
   // Initial load + slow polling fallback. While the SSE stream is open the
   // debounced pulse-driven refresh below carries the updates instead.
@@ -185,6 +194,12 @@ export default function App() {
         <FixtureBadge show={hasFixtureSource} />
       </main>
     );
+  }
+
+  // First run (no source configured any way): the setup wizard owns the screen.
+  // `?hud` is left as an escape hatch for debugging a stuck fresh install.
+  if (config?.needs_setup && !params.hud) {
+    return <SetupWizard onDone={reloadAfterSetup} />;
   }
 
   return (
