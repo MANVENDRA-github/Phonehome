@@ -6,6 +6,7 @@ import { FilterRail } from "./components/FilterRail";
 import { FixtureBadge } from "./components/FixtureBadge";
 import { Hud } from "./components/Hud";
 import { SetupWizard } from "./components/SetupWizard";
+import { WeeklyDiffPanel } from "./components/WeeklyDiffPanel";
 import { startHero } from "./globe/hero";
 import type { GlobeScene } from "./globe/GlobeScene";
 import { useSSE } from "./useSSE";
@@ -57,6 +58,7 @@ export default function App() {
   const [filter, setFilter] = useState<Set<number> | null>(null);
   const [drill, setDrill] = useState<DrillSelection | null>(null);
   const [hasFixtureSource, setHasFixtureSource] = useState(false);
+  const [diffTick, setDiffTick] = useState(0);
   const [heroCallout, setHeroCallout] = useState<string | null>(null);
   const [homeOverride] = useState(storedHome);
   const sse = useSSE();
@@ -105,12 +107,18 @@ export default function App() {
   useEffect(() => {
     refreshDevices();
     refreshArcs();
+    // The diff reads weekly snapshots (recomputed server-side ~every 60s), so it
+    // refetches on a slower cadence than the globe.
     const interval = sse.status === "open" ? 15000 : 3000;
     const t = setInterval(() => {
       refreshDevices();
       refreshArcs();
     }, interval);
-    return () => clearInterval(t);
+    const diffT = setInterval(() => setDiffTick((n) => n + 1), 30000);
+    return () => {
+      clearInterval(t);
+      clearInterval(diffT);
+    };
   }, [refreshDevices, refreshArcs, sse.status]);
 
   // SSE pulses: debounce a devices+arcs refresh so bursts coalesce.
@@ -271,6 +279,8 @@ export default function App() {
           </p>
         )}
       </section>
+
+      <WeeklyDiffPanel refreshKey={diffTick} />
 
       <Devices devices={devices} loaded={devicesLoaded} onChanged={refreshDevices} />
 

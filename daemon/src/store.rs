@@ -276,6 +276,51 @@ pub struct SourceSummary {
     pub enabled: bool,
 }
 
+/// The metric fields of one weekly snapshot, without the keying columns — the
+/// unit the diff subtracts week-over-week.
+#[derive(Debug, serde::Serialize)]
+pub struct SnapshotVals {
+    pub distinct_domains: i64,
+    pub tracker_domains: i64,
+    pub distinct_entities: i64,
+    pub distinct_countries: i64,
+    pub volume: i64,
+    pub blocked: i64,
+    pub score: i64,
+}
+
+/// A domain a device contacted this week but not last week (M6 diff). Snapshots
+/// store only counts, so this is computed from `query_rollups` week windows.
+#[derive(Debug, serde::Serialize)]
+pub struct NewDomain {
+    pub domain: String,
+    pub is_tracker: bool,
+    pub country: Option<String>,
+    pub queries: i64,
+}
+
+/// One canonical device's week-over-week change: current vs previous snapshot
+/// metrics plus the domains that are new this week. `previous` is `None` for a
+/// device with no prior-week snapshot (then every current domain is "new").
+#[derive(Debug, serde::Serialize)]
+pub struct WeekDiff {
+    pub device_id: i64,
+    pub device_name: String,
+    pub current: SnapshotVals,
+    pub previous: Option<SnapshotVals>,
+    pub new_domains: Vec<NewDomain>,
+}
+
+/// The two-most-recent-weeks diff across all devices (`GET /api/diffs`).
+/// `previous_week_start` is `None` when only one week of data exists — the UI
+/// then shows "first week, no comparison yet".
+#[derive(Debug, serde::Serialize)]
+pub struct DiffsResponse {
+    pub current_week_start: Option<i64>,
+    pub previous_week_start: Option<i64>,
+    pub devices: Vec<WeekDiff>,
+}
+
 /// Errors from device mutations that the API maps to 400/404.
 #[derive(Debug)]
 pub enum DeviceError {
@@ -936,6 +981,88 @@ impl Store {
         }
     }
 
+    /// Week-over-week diff across the two most recent snapshot weeks (M6). Per
+    /// canonical device: current vs previous snapshot metrics, plus up to
+    /// `new_domain_limit` domains that are new this week (trackers first). With
+    /// only one week of data, `previous_week_start` is `None` and every device's
+    /// `previous`/`new_domains` are empty (nothing to compare against).
+    pub fn week_diffs(&self, new_domain_limit: usize) -> rusqlite::Result<DiffsResponse> {
+        let conn = self.conn.lock().expect("store mutex poisoned");
+        let weeks: Vec<i64> = {
+            let mut stmt = conn.prepare(
+                "SELECT DISTINCT week_start FROM snapshots ORDER BY week_start DESC LIMIT 2",
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        let Some(&cur) = weeks.first() else {
+            return Ok(DiffsResponse {
+                current_week_start: None,
+                previous_week_start: None,
+                devices: vec![],
+            });
+        };
+        let prev = weeks.get(1).copied();
+
+        let week_vals = |week: i64| -> rusqlite::Result<HashMap<i64, SnapshotVals>> {
+            let mut stmt = conn.prepare(
+                "SELECT device_id, distinct_domains, tracker_domains, distinct_entities,
+                        distinct_countries, volume, blocked, score
+                 FROM snapshots WHERE week_start = ?1",
+            )?;
+            let rows = stmt.query_map(params![week], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    SnapshotVals {
+                        distinct_domains: r.get(1)?,
+                        tracker_domains: r.get(2)?,
+                        distinct_entities: r.get(3)?,
+                        distinct_countries: r.get(4)?,
+                        volume: r.get(5)?,
+                        blocked: r.get(6)?,
+                        score: r.get(7)?,
+                    },
+                ))
+            })?;
+            rows.collect()
+        };
+        let mut cur_vals = week_vals(cur)?;
+        let mut prev_vals = match prev {
+            Some(p) => week_vals(p)?,
+            None => HashMap::new(),
+        };
+
+        // Worst (highest current risk) first — that's the device worth reading.
+        let mut ids: Vec<i64> = cur_vals.keys().copied().collect();
+        ids.sort_by(|a, b| cur_vals[b].score.cmp(&cur_vals[a].score).then(a.cmp(b)));
+
+        let mut devices = Vec::with_capacity(ids.len());
+        for id in ids {
+            let current = cur_vals.remove(&id).expect("id came from cur_vals");
+            let previous = prev_vals.remove(&id);
+            let device_name =
+                canonical_display_name(&conn, id)?.unwrap_or_else(|| format!("device {id}"));
+            // New domains only make sense against a real previous week.
+            let new_domains = match prev {
+                Some(p) => new_domains_for(&conn, id, cur, p, new_domain_limit)?,
+                None => vec![],
+            };
+            devices.push(WeekDiff {
+                device_id: id,
+                device_name,
+                current,
+                previous,
+                new_domains,
+            });
+        }
+
+        Ok(DiffsResponse {
+            current_week_start: Some(cur),
+            previous_week_start: prev,
+            devices,
+        })
+    }
+
     /// Sets (or, with a blank name, clears) a device's user-assigned name.
     /// Returns false if the id doesn't exist.
     pub fn rename_device(&self, id: i64, name: &str) -> rusqlite::Result<bool> {
@@ -1061,6 +1188,80 @@ fn upsert_device(
         now_ms,
     ])?;
     Ok(())
+}
+
+/// Resolves a canonical device id to its display name (naming precedence). Used
+/// by the diff; mirrors the inline naming in `list_devices`.
+fn canonical_display_name(conn: &Connection, id: i64) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT identity_key, oui_vendor, name_user, name_dhcp, name_mdns, mac
+         FROM devices WHERE id = ?1",
+        params![id],
+        |r| {
+            let identity_key: String = r.get(0)?;
+            let vendor: Option<String> = r.get(1)?;
+            let name_user: Option<String> = r.get(2)?;
+            let name_dhcp: Option<String> = r.get(3)?;
+            let name_mdns: Option<String> = r.get(4)?;
+            let mac: Option<String> = r.get(5)?;
+            Ok(naming::display_name(
+                name_user.as_deref(),
+                name_dhcp.as_deref(),
+                name_mdns.as_deref(),
+                vendor.as_deref(),
+                mac.as_deref(),
+                &identity_key,
+            ))
+        },
+    )
+    .optional()
+}
+
+/// Domains a canonical device contacted in the current week `[cur, cur+WEEK)`
+/// but NOT in the previous week `[prev, prev+WEEK)` — the "new this week" list.
+/// Trackers first, then busiest; capped at `limit`. Folds in merged devices.
+fn new_domains_for(
+    conn: &Connection,
+    device_id: i64,
+    cur: i64,
+    prev: i64,
+    limit: usize,
+) -> rusqlite::Result<Vec<NewDomain>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.domain, dest.is_tracker, dest.country, SUM(r.count) AS q
+         FROM query_rollups r
+         LEFT JOIN destinations dest ON dest.domain = r.domain
+         WHERE r.client_key IN
+               (SELECT identity_key FROM devices WHERE COALESCE(merged_into, id) = ?1)
+           AND r.bucket_hour * 3600000 >= ?2 AND r.bucket_hour * 3600000 < ?3
+           AND r.domain NOT IN (
+               SELECT r2.domain FROM query_rollups r2
+               WHERE r2.client_key IN
+                     (SELECT identity_key FROM devices WHERE COALESCE(merged_into, id) = ?1)
+                 AND r2.bucket_hour * 3600000 >= ?4 AND r2.bucket_hour * 3600000 < ?5)
+         GROUP BY r.domain
+         ORDER BY dest.is_tracker DESC, q DESC, r.domain ASC
+         LIMIT ?6",
+    )?;
+    let rows = stmt.query_map(
+        params![
+            device_id,
+            cur,
+            cur + WEEK_MS,
+            prev,
+            prev + WEEK_MS,
+            limit as i64
+        ],
+        |r| {
+            Ok(NewDomain {
+                domain: r.get(0)?,
+                is_tracker: r.get::<_, Option<i64>>(1)?.unwrap_or(0) != 0,
+                country: r.get(2)?,
+                queries: r.get(3)?,
+            })
+        },
+    )?;
+    rows.collect()
 }
 
 /// Allocates a source id for a new wizard config: `{kind}-main` if unused, else
@@ -1839,6 +2040,111 @@ mod tests {
             .unwrap();
         assert_eq!(pulses.len(), 1);
         assert_eq!(pulses[0].device_id, a, "pulse follows merged_into");
+    }
+
+    // --- M5 weekly diff ---
+
+    #[test]
+    fn week_diffs_reports_deltas_and_new_domains() {
+        let store = Store::open_in_memory().unwrap();
+        let mac = "a8:51:ab:10:20:30";
+        let ip = "192.168.1.30";
+        // Week A (epoch week starting week0): base domains only.
+        let week0 = 0i64;
+        let week1 = WEEK_MS;
+        let hour = 3_600_000i64;
+        let mut evs = Vec::new();
+        for i in 0..20 {
+            let dom = if i % 2 == 0 {
+                "doubleclick.net"
+            } else {
+                "api.github.com"
+            };
+            evs.push(mac_event(
+                week0 + i * hour % WEEK_MS,
+                mac,
+                ip,
+                dom,
+                i % 3 == 0,
+            ));
+        }
+        // Week B: same base + a NEW tracker (samsungads.com) that wasn't in week A.
+        for i in 0..20 {
+            let dom = match i % 3 {
+                0 => "doubleclick.net",
+                1 => "api.github.com",
+                _ => "samsungads.com", // new this week, tracker
+            };
+            evs.push(mac_event(
+                week1 + i * hour % WEEK_MS,
+                mac,
+                ip,
+                dom,
+                i % 4 == 0,
+            ));
+        }
+        store
+            .apply_batch("s1", "fixture", &evs, Some("40"), 0)
+            .unwrap();
+        store.snapshot_all_weeks(0).unwrap();
+
+        let res = store.week_diffs(10).unwrap();
+        assert_eq!(res.previous_week_start, Some(week0));
+        assert_eq!(res.current_week_start, Some(week1));
+        assert_eq!(res.devices.len(), 1);
+        let d = &res.devices[0];
+        assert!(d.previous.is_some(), "prior week present");
+        // The new-this-week list contains the week-B-only tracker, not the
+        // domains that were already there in week A.
+        let names: Vec<&str> = d.new_domains.iter().map(|n| n.domain.as_str()).collect();
+        assert!(names.contains(&"samsungads.com"), "got {names:?}");
+        assert!(
+            !names.contains(&"doubleclick.net"),
+            "week-A domain is not new"
+        );
+        let new_tracker = d
+            .new_domains
+            .iter()
+            .find(|n| n.domain == "samsungads.com")
+            .unwrap();
+        assert!(new_tracker.is_tracker);
+        assert_eq!(new_tracker.country.as_deref(), Some("KR"));
+    }
+
+    #[test]
+    fn week_diffs_single_week_has_no_comparison() {
+        let store = Store::open_in_memory().unwrap();
+        let evs: Vec<QueryEvent> = (0..10)
+            .map(|i| {
+                mac_event(
+                    i * 3_600_000,
+                    "a8:51:ab:10:20:30",
+                    "192.168.1.30",
+                    "doubleclick.net",
+                    false,
+                )
+            })
+            .collect();
+        store
+            .apply_batch("s1", "fixture", &evs, Some("10"), 0)
+            .unwrap();
+        store.snapshot_all_weeks(0).unwrap();
+
+        let res = store.week_diffs(10).unwrap();
+        assert!(res.current_week_start.is_some());
+        assert_eq!(res.previous_week_start, None, "only one week of data");
+        assert!(res
+            .devices
+            .iter()
+            .all(|d| d.previous.is_none() && d.new_domains.is_empty()));
+    }
+
+    #[test]
+    fn week_diffs_empty_when_no_snapshots() {
+        let store = Store::open_in_memory().unwrap();
+        let res = store.week_diffs(10).unwrap();
+        assert_eq!(res.current_week_start, None);
+        assert!(res.devices.is_empty());
     }
 
     // --- M5 source config + home (schema v4) ---
