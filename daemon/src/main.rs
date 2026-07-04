@@ -19,11 +19,14 @@ use axum::{
 use phonehome_core::{FixtureReplayer, Ingestor};
 use rust_embed::RustEmbed;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use store::{DeviceError, Store};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Mutex};
+use tokio::task::JoinHandle;
 use tokio_stream::{wrappers::BroadcastStream, Stream, StreamExt};
 
 /// `ui/dist` compiled into the binary. Build order: `npm run build` in `ui/`
@@ -35,6 +38,8 @@ struct Assets;
 const DEFAULT_PORT: u16 = 8480;
 const DEFAULT_DB: &str = "data/phonehome.db";
 const FIXTURE_CHUNK: usize = 1000;
+/// Live-source poll cadence when the wizard/env doesn't override it.
+const DEFAULT_POLL_INTERVAL_SECS: u64 = 15;
 /// Live-pulse fan-out buffer; a lagging SSE subscriber drops pulses (they are
 /// hints, not state — the globe refetches /api/arcs to reconcile).
 const PULSE_BUFFER: usize = 256;
@@ -47,19 +52,35 @@ struct Home {
     lon: f64,
 }
 
-/// Client-facing runtime config (`GET /api/config`), parsed from env once at
-/// startup (env is the config surface until the M5 wizard).
-#[derive(Clone, serde::Serialize)]
+/// Client-facing runtime config (`GET /api/config`). Computed per request now
+/// (M5): `home` and `needs_setup` can change at runtime once the wizard writes
+/// config, so this is no longer a cached-at-startup snapshot.
+#[derive(serde::Serialize)]
 struct ApiConfig {
     home: Option<Home>,
     version: &'static str,
+    /// True on a fresh install with no source configured any way — the UI shows
+    /// the first-run setup wizard. Keyed on source *existence*, not data volume,
+    /// so a valid-but-quiet source never re-triggers the wizard.
+    needs_setup: bool,
 }
+
+/// Runtime handles of the per-source ingest loops, keyed by source id. Lets the
+/// wizard start a new source (or replace one) without a process restart.
+type IngestRegistry = Arc<Mutex<HashMap<String, JoinHandle<()>>>>;
 
 #[derive(Clone)]
 struct AppState {
     store: Store,
     pulses: broadcast::Sender<store::Pulse>,
-    config: ApiConfig,
+    ingestors: IngestRegistry,
+    /// Whether any source was configured from env at boot (`PHONEHOME_FIXTURE`
+    /// / `_PIHOLE_*` / `_ADGUARD_*`). Env-configured deployments skip the wizard.
+    has_startup_source: bool,
+    /// Home origin from `PHONEHOME_HOME_LAT/LON`, if set (fallback under the
+    /// wizard-persisted home).
+    env_home: Option<Home>,
+    version: &'static str,
 }
 
 /// Lets the seven pre-M4 handlers keep extracting `State<Store>` unchanged.
@@ -79,6 +100,8 @@ fn app(state: AppState) -> Router {
         .route("/api/devices/merge", post(merge_devices))
         .route("/api/devices/{id}/scorecard", get(scorecard))
         .route("/api/snapshots", get(snapshots))
+        .route("/api/sources", get(list_sources).post(create_source))
+        .route("/api/sources/test", post(test_source))
         .route("/api/arcs", get(arcs))
         .route("/api/arcs/domains", get(arc_domains))
         .route("/api/rollups", get(rollups))
@@ -181,8 +204,160 @@ async fn snapshots(State(store): State<Store>) -> Result<Json<Vec<store::Snapsho
     Ok(Json(rows))
 }
 
-async fn config(State(state): State<AppState>) -> Json<ApiConfig> {
-    Json(state.config)
+async fn config(State(state): State<AppState>) -> Result<Json<ApiConfig>, Response> {
+    let store = state.store.clone();
+    let (persisted_home, source_configs) = tokio::task::spawn_blocking(move || {
+        Ok::<_, rusqlite::Error>((store.get_home()?, store.source_config_count()?))
+    })
+    .await
+    .map_err(internal_error)?
+    .map_err(internal_error)?;
+    // Wizard-set home (the latest explicit user intent) wins over the env fallback.
+    let home = persisted_home
+        .map(|(lat, lon)| Home { lat, lon })
+        .or(state.env_home);
+    let needs_setup = !state.has_startup_source && source_configs == 0;
+    Ok(Json(ApiConfig {
+        home,
+        version: state.version,
+        needs_setup,
+    }))
+}
+
+/// The wizard's "test connection" and the persist path share one probe: build
+/// the adapter and validate credentials without touching the DB. `Err` carries
+/// the HTTP status the caller should return (400 for a client mistake like a
+/// missing username or unknown kind, 502 for a source that rejected us).
+async fn probe_source(
+    kind: &str,
+    base_url: &str,
+    username: Option<&str>,
+    secret: &str,
+) -> Result<(), (StatusCode, String)> {
+    match kind {
+        "pihole" => pihole::PiholeIngestor::probe(base_url, secret)
+            .await
+            .map_err(|e| (StatusCode::BAD_GATEWAY, e.0)),
+        "adguard" => {
+            let user = username.ok_or((
+                StatusCode::BAD_REQUEST,
+                "adguard requires a username".to_string(),
+            ))?;
+            adguard::AdguardIngestor::probe(base_url, user, secret)
+                .await
+                .map_err(|e| (StatusCode::BAD_GATEWAY, e.0))
+        }
+        other => Err((
+            StatusCode::BAD_REQUEST,
+            format!("unknown source kind: {other}"),
+        )),
+    }
+}
+
+#[derive(Deserialize)]
+struct SourceTestReq {
+    kind: String,
+    base_url: String,
+    username: Option<String>,
+    secret: String,
+}
+
+/// `POST /api/sources/test` — validate a source without persisting. Returns
+/// `{ok:true}` on success, or the probe's status + `{ok:false, error}`.
+async fn test_source(Json(req): Json<SourceTestReq>) -> Response {
+    match probe_source(
+        &req.kind,
+        &req.base_url,
+        req.username.as_deref(),
+        &req.secret,
+    )
+    .await
+    {
+        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response(),
+        Err((code, msg)) => {
+            (code, Json(serde_json::json!({ "ok": false, "error": msg }))).into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct SourceCreateReq {
+    kind: String,
+    base_url: String,
+    username: Option<String>,
+    secret: String,
+    interval_s: Option<u64>,
+    home_lat: Option<f64>,
+    home_lon: Option<f64>,
+}
+
+/// `POST /api/sources` — probe, persist, and start ingesting immediately (no
+/// restart) so data lands within one poll interval (≤60s time-to-wow, M5).
+async fn create_source(
+    State(state): State<AppState>,
+    Json(req): Json<SourceCreateReq>,
+) -> Response {
+    // Probe first: never persist a source we can't reach, so the wizard's
+    // "paste → data" promise is honest.
+    if let Err((code, msg)) = probe_source(
+        &req.kind,
+        &req.base_url,
+        req.username.as_deref(),
+        &req.secret,
+    )
+    .await
+    {
+        return (code, Json(serde_json::json!({ "error": msg }))).into_response();
+    }
+
+    let input = store::SourceConfigInput {
+        kind: req.kind.clone(),
+        base_url: req.base_url.clone(),
+        username: req.username.clone(),
+        secret: req.secret.clone(),
+        interval_s: req.interval_s.unwrap_or(DEFAULT_POLL_INTERVAL_SECS),
+    };
+    let store = state.store.clone();
+    let summary = match tokio::task::spawn_blocking(move || store.save_source_config(&input)).await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => return internal_error(e),
+        Err(e) => return internal_error(e),
+    };
+
+    // Optional home origin (validated; an out-of-range pair is ignored, not an error).
+    if let (Some(lat), Some(lon)) = (req.home_lat, req.home_lon) {
+        if lat.abs() <= 90.0 && lon.abs() <= 180.0 {
+            let store = state.store.clone();
+            if let Err(e) = tokio::task::spawn_blocking(move || store.set_home(lat, lon)).await {
+                tracing::error!(error = %e, "persist home task panicked");
+            }
+        }
+    }
+
+    if let Some((ingestor, interval)) = build_ingestor(
+        &summary.id,
+        &req.kind,
+        &req.base_url,
+        req.username.as_deref(),
+        &req.secret,
+        summary.interval_s,
+    ) {
+        spawn_source(&state, summary.id.clone(), ingestor, interval).await;
+    }
+    (StatusCode::CREATED, Json(summary)).into_response()
+}
+
+/// `GET /api/sources` — configured sources, secrets stripped (D-014).
+async fn list_sources(
+    State(state): State<AppState>,
+) -> Result<Json<Vec<store::SourceSummary>>, Response> {
+    let store = state.store.clone();
+    let rows = tokio::task::spawn_blocking(move || store.list_source_summaries())
+        .await
+        .map_err(internal_error)?
+        .map_err(internal_error)?;
+    Ok(Json(rows))
 }
 
 /// Resolves an optional `window` query param (hours, counting back from now)
@@ -360,6 +535,60 @@ fn configured_ingestors() -> Vec<(Box<dyn Ingestor>, Duration)> {
     out
 }
 
+/// Builds a `Box<dyn Ingestor>` for a persisted/wizard source. Returns `None`
+/// for an unknown kind (logged, skipped — never fatal). D-003: this is the only
+/// place besides `configured_ingestors` that maps a kind to a concrete adapter.
+fn build_ingestor(
+    id: &str,
+    kind: &str,
+    base_url: &str,
+    username: Option<&str>,
+    secret: &str,
+    interval_s: u64,
+) -> Option<(Box<dyn Ingestor>, Duration)> {
+    let interval = Duration::from_secs(interval_s);
+    match kind {
+        "pihole" => Some((
+            Box::new(pihole::PiholeIngestor::new(id, base_url, secret)),
+            interval,
+        )),
+        "adguard" => Some((
+            Box::new(adguard::AdguardIngestor::new(
+                id,
+                base_url,
+                username.unwrap_or_default(),
+                secret,
+            )),
+            interval,
+        )),
+        other => {
+            tracing::error!(kind = other, id, "unknown persisted source kind; skipped");
+            None
+        }
+    }
+}
+
+/// Spawns (or replaces) the ingest loop for `id`, tracking its handle so a later
+/// wizard save for the same id aborts the old loop first. Abort is loss/dup-safe:
+/// `apply_batch` is atomic and the cursor persists, so a re-spawn resumes cleanly.
+async fn spawn_source(
+    state: &AppState,
+    id: String,
+    ingestor: Box<dyn Ingestor>,
+    interval: Duration,
+) {
+    let handle = tokio::spawn(ingest::run(
+        state.store.clone(),
+        state.pulses.clone(),
+        ingestor,
+        interval,
+    ));
+    let mut reg = state.ingestors.lock().await;
+    if let Some(old) = reg.insert(id, handle) {
+        old.abort();
+    }
+}
+
 /// Reads `PHONEHOME_HOME_LAT` / `PHONEHOME_HOME_LON` (decimal degrees). Both
 /// must be present and in range or the home stays unset — the UI then shows a
 /// "set home location" hint instead of a wrong origin.
@@ -428,13 +657,39 @@ async fn main() {
     tracing::info!(db = %db_path.display(), "store opened");
 
     let (pulses, _) = broadcast::channel::<store::Pulse>(PULSE_BUFFER);
-    for (ingestor, interval) in configured_ingestors() {
-        tokio::spawn(ingest::run(
-            store.clone(),
-            pulses.clone(),
-            ingestor,
-            interval,
-        ));
+    let env_ingestors = configured_ingestors();
+    let state = AppState {
+        store: store.clone(),
+        pulses,
+        ingestors: Arc::new(Mutex::new(HashMap::new())),
+        has_startup_source: !env_ingestors.is_empty(),
+        env_home: configured_home(),
+        version: env!("CARGO_PKG_VERSION"),
+    };
+
+    // Env-configured sources first, then any persisted wizard sources — both go
+    // through the same registry so a runtime save can later replace either.
+    for (ingestor, interval) in env_ingestors {
+        let id = ingestor.source_id().to_owned();
+        spawn_source(&state, id, ingestor, interval).await;
+    }
+    match store.list_source_configs() {
+        Ok(configs) => {
+            for cfg in configs.into_iter().filter(|c| c.enabled) {
+                if let Some((ingestor, interval)) = build_ingestor(
+                    &cfg.id,
+                    &cfg.kind,
+                    &cfg.base_url,
+                    cfg.username.as_deref(),
+                    &cfg.secret,
+                    cfg.interval_s,
+                ) {
+                    tracing::info!(id = %cfg.id, kind = %cfg.kind, "persisted source configured");
+                    spawn_source(&state, cfg.id.clone(), ingestor, interval).await;
+                }
+            }
+        }
+        Err(e) => tracing::error!(error = %e, "loading persisted source configs failed"),
     }
     tokio::spawn(snapshot_loop(store.clone()));
 
@@ -449,14 +704,6 @@ async fn main() {
         .unwrap_or_else(|e| panic!("failed to bind {addr}: {e}"));
     tracing::info!("phonehome daemon listening on http://localhost:{port}");
 
-    let state = AppState {
-        store,
-        pulses,
-        config: ApiConfig {
-            home: configured_home(),
-            version: env!("CARGO_PKG_VERSION"),
-        },
-    };
     axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -471,16 +718,30 @@ mod tests {
     use tower::ServiceExt;
 
     fn state_for(store: Store) -> AppState {
+        // Most tests represent an already-configured deployment (data seeded
+        // directly), so `has_startup_source` is true → the wizard stays hidden.
         AppState {
             store,
             pulses: broadcast::channel(PULSE_BUFFER).0,
-            config: ApiConfig {
-                home: Some(Home {
-                    lat: 12.97,
-                    lon: 77.59,
-                }),
-                version: env!("CARGO_PKG_VERSION"),
-            },
+            ingestors: Arc::new(Mutex::new(HashMap::new())),
+            has_startup_source: true,
+            env_home: Some(Home {
+                lat: 12.97,
+                lon: 77.59,
+            }),
+            version: env!("CARGO_PKG_VERSION"),
+        }
+    }
+
+    /// A fresh-install state: no env source, no env home — the wizard should show.
+    fn fresh_state(store: Store) -> AppState {
+        AppState {
+            store,
+            pulses: broadcast::channel(PULSE_BUFFER).0,
+            ingestors: Arc::new(Mutex::new(HashMap::new())),
+            has_startup_source: false,
+            env_home: None,
+            version: env!("CARGO_PKG_VERSION"),
         }
     }
 
@@ -864,5 +1125,259 @@ mod tests {
         let v = json_body(res).await;
         assert!(!v.as_array().unwrap().is_empty());
         assert!(v[0]["score"].is_number());
+    }
+
+    // --- M5 setup wizard: config surface + sources endpoints ---
+
+    fn source_input(
+        kind: &str,
+        url: &str,
+        user: Option<&str>,
+        secret: &str,
+    ) -> store::SourceConfigInput {
+        store::SourceConfigInput {
+            kind: kind.into(),
+            base_url: url.into(),
+            username: user.map(str::to_owned),
+            secret: secret.into(),
+            interval_s: 15,
+        }
+    }
+
+    #[tokio::test]
+    async fn config_needs_setup_true_on_fresh_install() {
+        let res = app(fresh_state(Store::open_in_memory().unwrap()))
+            .oneshot(Request::get("/api/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let v = json_body(res).await;
+        assert_eq!(v["needs_setup"], true);
+        assert!(v["home"].is_null(), "no env or persisted home yet");
+    }
+
+    #[tokio::test]
+    async fn config_needs_setup_false_once_a_source_is_configured() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_source_config(&source_input("pihole", "http://pi.hole", None, "pw"))
+            .unwrap();
+        store.set_home(12.0, 34.0).unwrap();
+        let res = app(fresh_state(store))
+            .oneshot(Request::get("/api/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let v = json_body(res).await;
+        assert_eq!(
+            v["needs_setup"], false,
+            "a persisted source hides the wizard"
+        );
+        // Persisted home surfaces even without an env home.
+        assert_eq!(v["home"]["lat"], 12.0);
+        assert_eq!(v["home"]["lon"], 34.0);
+    }
+
+    #[tokio::test]
+    async fn config_needs_setup_false_when_env_source_present() {
+        // state_for() sets has_startup_source = true (env/fixture deployment).
+        let res = test_app()
+            .oneshot(Request::get("/api/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let v = json_body(res).await;
+        assert_eq!(v["needs_setup"], false);
+    }
+
+    #[tokio::test]
+    async fn sources_get_lists_configs_without_secrets() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .save_source_config(&source_input("pihole", "http://pi.hole", None, "topsecret"))
+            .unwrap();
+        let res = app_for(store)
+            .oneshot(Request::get("/api/sources").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = to_bytes(res.into_body(), 1_048_576).await.unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("topsecret"),
+            "secret must never appear in the response body: {text}"
+        );
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["kind"], "pihole");
+        assert_eq!(arr[0]["base_url"], "http://pi.hole");
+        assert!(arr[0].get("secret").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_source_unknown_kind_is_400() {
+        let res = test_app()
+            .oneshot(
+                Request::post("/api/sources/test")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"kind":"bogus","base_url":"http://x","secret":"y"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_source_adguard_without_username_is_400() {
+        let res = test_app()
+            .oneshot(
+                Request::post("/api/sources/test")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"kind":"adguard","base_url":"http://x","secret":"y"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_source_unreachable_is_502() {
+        // Nothing is listening on 127.0.0.1:1 → probe fails to connect → 502.
+        let res = test_app()
+            .oneshot(
+                Request::post("/api/sources/test")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"kind":"pihole","base_url":"http://127.0.0.1:1","secret":"y"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        let v = json_body(res).await;
+        assert_eq!(v["ok"], false);
+        assert!(v["error"].is_string());
+    }
+
+    #[tokio::test]
+    async fn create_source_rejects_unreachable_and_persists_nothing() {
+        let store = Store::open_in_memory().unwrap();
+        let res = app(fresh_state(store.clone()))
+            .oneshot(
+                Request::post("/api/sources")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"kind":"pihole","base_url":"http://127.0.0.1:1","secret":"y"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            store.source_config_count().unwrap(),
+            0,
+            "a source we can't reach is never persisted"
+        );
+    }
+
+    /// A canned Ingestor: yields one event on the first poll, then stays quiet
+    /// (same cursor, no new events) — lets us drive `spawn_source` at runtime.
+    struct OneShot {
+        id: String,
+        yielded: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Ingestor for OneShot {
+        fn source_id(&self) -> &str {
+            &self.id
+        }
+        fn kind(&self) -> &'static str {
+            "fixture"
+        }
+        async fn poll(
+            &mut self,
+            _cursor: Option<&str>,
+        ) -> Result<phonehome_core::Batch, phonehome_core::IngestError> {
+            if self.yielded {
+                return Ok(phonehome_core::Batch {
+                    events: vec![],
+                    next_cursor: Some("1".into()),
+                });
+            }
+            self.yielded = true;
+            Ok(phonehome_core::Batch {
+                events: vec![QueryEvent {
+                    ts: 0,
+                    client_ip: "192.168.1.20".parse::<IpAddr>().unwrap(),
+                    client_mac: Some("f0:5c:77:11:22:33".into()),
+                    domain: "samsungads.com".into(),
+                    qtype: "A".into(),
+                    blocked: true,
+                    source: "fixture".into(),
+                }],
+                next_cursor: Some("1".into()),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_source_ingests_at_runtime_and_replace_aborts_old() {
+        let store = Store::open_in_memory().unwrap();
+        let state = fresh_state(store.clone());
+
+        spawn_source(
+            &state,
+            "pihole-main".into(),
+            Box::new(OneShot {
+                id: "pihole-main".into(),
+                yielded: false,
+            }),
+            Duration::from_millis(10),
+        )
+        .await;
+
+        // Wait (bounded) for the runtime-spawned loop to apply its one batch.
+        let mut ok = false;
+        for _ in 0..200 {
+            if store.stats().unwrap().total_queries >= 1 {
+                ok = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(ok, "runtime-spawned source did not ingest within 2s");
+        assert_eq!(store.cursor("pihole-main").unwrap().as_deref(), Some("1"));
+        assert_eq!(state.ingestors.lock().await.len(), 1);
+
+        // Replacing the same id aborts the old handle and leaves a single entry.
+        // (Loss/dup-free resume from the persisted cursor is proven separately by
+        // the store's restart property test — a real adapter honors the cursor.)
+        spawn_source(
+            &state,
+            "pihole-main".into(),
+            Box::new(OneShot {
+                id: "pihole-main".into(),
+                yielded: false,
+            }),
+            Duration::from_millis(10),
+        )
+        .await;
+        assert_eq!(
+            state.ingestors.lock().await.len(),
+            1,
+            "same id replaced, not duplicated"
+        );
     }
 }

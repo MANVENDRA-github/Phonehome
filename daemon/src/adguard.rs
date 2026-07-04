@@ -80,6 +80,14 @@ impl AdguardIngestor {
         }
     }
 
+    /// Validates a URL + credentials without persisting anything — the setup
+    /// wizard's "test connection" (M5). Reuses the real login path so a green
+    /// probe means real ingestion will authenticate too.
+    pub async fn probe(base_url: &str, username: &str, password: &str) -> Result<(), IngestError> {
+        let mut ing = Self::new("probe", base_url, username, password);
+        ing.login().await
+    }
+
     async fn login(&mut self) -> Result<(), IngestError> {
         let res = self
             .http

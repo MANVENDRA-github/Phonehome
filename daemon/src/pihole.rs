@@ -93,6 +93,14 @@ impl PiholeIngestor {
         }
     }
 
+    /// Validates a URL + password without persisting anything — the setup
+    /// wizard's "test connection" (M5). Reuses the real auth path so a green
+    /// probe means real ingestion will authenticate too.
+    pub async fn probe(base_url: &str, password: &str) -> Result<(), IngestError> {
+        let mut ing = Self::new("probe", base_url, password);
+        ing.authenticate().await.map(|_| ())
+    }
+
     async fn authenticate(&mut self) -> Result<String, IngestError> {
         let res = self
             .http
