@@ -391,8 +391,40 @@ label in-frame.
 ## §M5 — Ship (in progress)
 
 Landing across focused PRs (setup wizard → fixture reshape → weekly diff →
-hardening/release). Evidence accrues per PR; the timed clean-install transcript
-and release land with the final PR.
+hardening/release). Evidence accrues per PR.
+
+### Setup wizard — paste source → data at runtime (SPEC M5 acceptance)
+
+Live run of the real daemon against a mock Pi-hole v6, fresh temp DB, **no**
+source env — the first-run path end to end:
+
+```
+GET  /api/config           -> {"home":null,"version":"0.1.0","needs_setup":true}
+POST /api/sources/test  (bad kind)             -> 400
+POST /api/sources/test  (unreachable pihole)   -> 502 {"ok":false,"error":"pihole auth request: ..."}
+POST /api/sources/test  (mock pihole)          -> 200 {"ok":true}
+POST /api/sources       (mock pihole + home)   -> 201 {"id":"pihole-main",...}   (secret NOT echoed)
+
+# within one 15s poll interval, no restart:
+GET  /api/stats   -> total_queries:3, source pihole-main with a live cursor
+GET  /api/config  -> {"home":{"lat":12.97,"lon":77.59},...,"needs_setup":false}
+GET  /api/sources -> [{"id":"pihole-main","base_url":"...","username":null,...}]   (no "secret" key)
+
+# restart the daemon, SAME db, NO env source:
+log: "persisted source configured id=pihole-main kind=pihole"   (boot reconstruction)
+GET  /api/config & /api/sources -> pihole-main restored, home persisted
+```
+
+D-014 confirmed at rest: `SELECT id,kind,secret FROM source_config` →
+`pihole-main|pihole|whatever` (plaintext in the local DB), yet the secret never
+appears in any API response (`/api/sources` body checked byte-for-byte in the
+`sources_get_lists_configs_without_secrets` test).
+
+Backend: schema v3→v4 migration preserves data (test); `spawn_source` runtime
+ingest + replace test; probe/needs_setup/secret-stripping endpoint tests. UI:
+`setup.test.ts` (10 vitest) for the pure form logic; `wizard.spec.ts` (3
+Playwright) drives the real compiled wizard — fresh-install render, failed
+test-connection (rose error), AdGuard username reveal, good-test→Start→app.
 
 ### Weekly diff — real week-over-week delta (SPEC M5 acceptance)
 
@@ -423,5 +455,52 @@ Backend `store::week_diffs` is unit-tested (two-week seed asserts the new tracke
 appears and week-1 domains don't; single-week → no comparison; empty → empty);
 `ui/src/diff.ts` risk-delta direction is vitest-tested (rising score = rose);
 `e2e/diff.spec.ts` asserts the panel renders the delta + new-tracker list.
-`cargo test` 62 daemon + 24 e2e/store green; `npm test` 31 vitest; `npm run e2e`
+`cargo test` 63 daemon + 27 e2e/store green; `npm test` 31 vitest; `npm run e2e`
 8 pass; clippy `-D warnings` + fmt clean.
+
+### Hardened one-container deploy (SPEC M5 · D-006)
+
+`--healthcheck` subcommand (used by the Docker/compose HEALTHCHECK so the slim
+image needs no curl and works under a read-only root fs):
+
+```
+$ phonehome-daemon --healthcheck          # no daemon running
+healthcheck: error sending request for url (http://127.0.0.1:8480/api/health)
+exit=1
+$ phonehome-daemon --healthcheck          # daemon up
+exit=0
+```
+
+Compose hardening (`docker-compose.yml`): `127.0.0.1`-only publish by default,
+`read_only: true` + `tmpfs: [/tmp]`, `cap_drop: [ALL]`,
+`no-new-privileges:true`, cpu/memory limits, log rotation, and the healthcheck
+above. SQLite writes stay inside `/data` — `PRAGMA temp_store = MEMORY` (added in
+`Store::init`) keeps temp files off the read-only root. Dockerfile pins bases
+(`node:20-slim`, `rust:1.94-slim`, `debian:bookworm-slim`), builds
+`--release --locked`, stays non-root, and adds the `HEALTHCHECK`. DB file is
+`chmod 600` on Unix (credentials at rest, D-014).
+
+### Clean-install proof — via CI (local Docker unavailable, disclosed)
+
+**Local Docker stays blocked on the dev machine** — virtualization is
+unavailable (PROOF §M0) and the `docker` CLI is not installed, so
+`docker compose config` / `docker compose up` cannot run here. Per the M5 plan
+this is disclosed rather than papered over: the **CI `docker-smoke` job is the
+clean-machine evidence** — it runs `docker compose up -d --build` on a fresh
+ubuntu runner and probes `/api/health` + the served page against the hardened
+compose file.
+
+CI run (this PR): _<filled after the PR's CI goes green>_ — `build-test` (UI
+build + vitest + fmt + clippy + `cargo test`) · `playwright-smoke` (globe +
+wizard + diff specs on SwiftShader WebGL) · `docker-smoke` (hardened container
+builds, starts, serves).
+
+**M5 acceptance:** first-run wizard takes a source and lands data at runtime in
+≤ one poll interval (well under 60 s), verified live against a mock Pi-hole; the
+diff view shows a real, labeled week-over-week delta; `docker compose up` builds
+one hardened container + one volume and serves the app (CI). The timed
+bare-metal `git clone` transcript is represented by the CI container build/run;
+local timing is not claimed because local Docker is unavailable (above). The
+v0.1.0 tag + GitHub release is cut by the maintainer (see `RELEASING.md`); the
+hero GIF and any diff media remain synthetic-fixture-labeled pending a real
+household capture (D-009).

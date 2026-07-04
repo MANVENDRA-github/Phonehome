@@ -1,12 +1,39 @@
 services:
   phonehome:
     build: .
+    image: phonehome:0.1.0
     container_name: phonehome
     ports:
-      - "8480:8480"
+      # Local-only by default (D-005). To view the globe from another device on
+      # your LAN, change this to "8480:8480".
+      - "127.0.0.1:8480:8480"
     volumes:
       - phonehome-data:/data
     restart: unless-stopped
+    # Hardening (M5): the only writable path is the /data volume.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "phonehome-daemon", "--healthcheck"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   phonehome-data:

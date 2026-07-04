@@ -34,7 +34,7 @@ Ground rules for every milestone:
 **Accept:** smooth on integrated graphics at the fixture's arc volume — measured, threshold set by the perf spike (target ≥10k visible arcs); click-through reaches raw rollup data in ≤2 clicks.
 **Proof:** FPS/frame-time numbers on named hardware (discrete + integrated) + **the 10-second real-data hero GIF** recorded via the Playwright harness. PROOF.md §M4. *This GIF is the launch asset — M4 is the go/no-go gate for the distribution plan (RESEARCH.md §5).*
 
-## M5 — Ship
+## M5 — Ship 🚧 (code-complete 2026-07-04 — evidence: PROOF.md §M5; setup wizard, weekly diff, hardened compose, and real README/install docs landed. Remaining: merge the PR stack, then the maintainer cuts the v0.1.0 tag + GitHub release per RELEASING.md. Clean-install proof is the CI docker-smoke job — local Docker unavailable, disclosed per the M5 decision.)
 **Deliverable:** first-run setup wizard (paste source URL + token → data in ≤60 s); weekly-diff UI (M-6); single `docker compose up` path hardened (one container, one volume, sane defaults); README quickstart flipped from "planned" to real; install docs; v0.1.0 tag + GitHub release.
 **Accept:** a clean machine (or clean VM) goes from `git clone` → populated globe in ≤2 commands and ≤5 min, timed; diff view shows a real week-over-week delta (from replayer time-warp if the calendar hasn't cooperated, labeled as such).
 **Proof:** timed clean-install transcript + diff screenshot. PROOF.md §M5.
