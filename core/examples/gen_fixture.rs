@@ -4,10 +4,14 @@
 //!   cargo run -p phonehome-core --example gen_fixture > fixtures/household-01.jsonl
 //!
 //! The output is SYNTHETIC-REALISTIC and clearly labeled as such (see
-//! fixtures/README.md): a plausible 18-device household over 8 days, modeled on
-//! public knowledge of what consumer devices query (vendor telemetry, ad
-//! networks, CDNs). It is NOT a capture of a real network. Seeded LCG → the
-//! same fixture bytes on every run.
+//! fixtures/README.md): a plausible 18-device household over 14 days (two full
+//! epoch-aligned weeks), modeled on public knowledge of what consumer devices
+//! query (vendor telemetry, ad networks, CDNs). It is NOT a capture of a real
+//! network. Seeded LCG → the same fixture bytes on every run.
+//!
+//! Two whole weeks with a deliberate week-2 behavior change (the living-room
+//! Samsung TV starts contacting new ad endpoints — see `WEEK2_NEW`) so the M5
+//! weekly-diff view shows a real "+N new tracker domains this week" delta.
 
 use phonehome_core::QueryEvent;
 
@@ -289,12 +293,35 @@ const DEVICES: &[Device] = &[
     },
 ];
 
-/// Fixture window: 8 days ending 2026-07-02 00:00:00 UTC (fixed — determinism).
+/// Fixture window: 14 days ending 2026-07-02 00:00:00 UTC (fixed — determinism).
+/// Both the end and the start (END − 14 days) land exactly on an epoch-week
+/// boundary (Thu 00:00 UTC), so the window is two FULL 7-day weeks — the
+/// snapshot job's epoch-aligned weeks (store::WEEK_MS) see comparable volumes
+/// and the injected week-2 change stands out instead of being a window artifact.
 const END_TS_MS: i64 = 1_782_950_400_000;
-const DAYS: i64 = 8;
-/// Keeps the committed fixture ~8k events / ~1.4 MB while preserving each
-/// device's relative chattiness. Lower it to generate denser load locally.
-const RATE_DIVISOR: usize = 5;
+const DAYS: i64 = 14;
+/// Keeps the committed fixture ~7k events / ~1.2 MB while preserving each
+/// device's relative chattiness (raised 5→10 at M5 when the window doubled to
+/// 14 days). Lower it to generate denser load locally.
+const RATE_DIVISOR: usize = 10;
+
+/// (domain, qtype, is_tracker) — one queryable destination for a device.
+type Dom = (&'static str, &'static str, bool);
+/// (device IP, new week-2 domains) — see [`WEEK2_NEW`].
+type Week2Entry = (&'static str, &'static [Dom]);
+
+/// Week-2 behavior change (M5 diff demo): devices (keyed by IP) that start
+/// contacting NEW domains only in the second week (`day >= 7`). The living-room
+/// Samsung TV picks up two new Samsung ad endpoints, so the weekly-diff view
+/// shows a real "+2 new tracker domains" delta — labeled replayed fixture
+/// (D-009). Both domains are mapped in `core/data/entities.toml` as trackers.
+const WEEK2_NEW: &[Week2Entry] = &[(
+    "192.168.1.20",
+    &[
+        ("samsungadhub.com", "A", true),
+        ("nmp.samsungqbe.com", "A", true),
+    ],
+)];
 
 fn main() {
     let mut rng = Lcg(0x5eed_2026_0702);
@@ -319,8 +346,25 @@ fn main() {
                     let base = (dev.rate_per_hour / RATE_DIVISOR).max(1);
                     base / 2 + rng.below(base.max(2))
                 };
+                // In week 2 (day >= 7) some devices gain new domains; draw from
+                // base + those extras so they appear only in the second week.
+                let week2: &[Dom] = if day >= 7 {
+                    WEEK2_NEW
+                        .iter()
+                        .find(|(ip, _)| *ip == dev.ip)
+                        .map(|(_, doms)| *doms)
+                        .unwrap_or(&[])
+                } else {
+                    &[]
+                };
+                let pool_len = dev.domains.len() + week2.len();
                 for _ in 0..n {
-                    let (domain, qtype, tracker) = dev.domains[rng.below(dev.domains.len())];
+                    let idx = rng.below(pool_len);
+                    let (domain, qtype, tracker) = if idx < dev.domains.len() {
+                        dev.domains[idx]
+                    } else {
+                        week2[idx - dev.domains.len()]
+                    };
                     // Pi-hole-style behavior: trackers are on blocklists and
                     // get blocked most of the time; the rest slip through.
                     let blocked = tracker && rng.chance(85);
