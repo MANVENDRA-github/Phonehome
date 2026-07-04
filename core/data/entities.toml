@@ -17,6 +17,17 @@ suffix = "samsungads.com"
 name = "Samsung Ads"
 category = "advertising"
 country = "KR"
+# Two endpoints the TV starts hitting in week 2 of the dev fixture (M5 diff demo).
+[[entity]]
+suffix = "samsungadhub.com"
+name = "Samsung Ads"
+category = "advertising"
+country = "KR"
+[[entity]]
+suffix = "nmp.samsungqbe.com"
+name = "Samsung Ads"
+category = "advertising"
+country = "KR"
 [[entity]]
 suffix = "ads.samsung.com"
 name = "Samsung Ads"

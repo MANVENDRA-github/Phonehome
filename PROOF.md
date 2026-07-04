@@ -289,6 +289,23 @@ from the committed JSONL):
   unmapped_queries — the explicit-unknown path is exercised end to end
 ```
 
+### Reshaped fixture (M5, D-009 update — in `feat/m5-fixture-reshape`)
+
+Regenerated for the M5 weekly-diff: **14 days → two full epoch-aligned weeks**
+with a deliberate week-2 behavior change (`RATE_DIVISOR` 5→10 holds the byte
+budget). Independently recomputed from the committed JSONL:
+```
+6024 events · 18 devices · 95 distinct domains · 1860 blocked · 957 KB
+2 epoch-weeks: 2026-06-18, 2026-06-25 (Thu-00:00-UTC aligned)
+week-2-only new trackers on the Samsung TV (192.168.1.20):
+  samsungadhub.com   → 32 queries, week 2026-06-25 only
+  nmp.samsungqbe.com → 33 queries, week 2026-06-25 only
+  (samsungads.com, a base domain, spans both weeks — control)
+```
+`cargo test` (30+59+24) green against the new fixture (`replayer_e2e` recomputes
+totals, so it self-checks); e2e smoke thresholds (`arcCount≥15`, `devices≥18`)
+still hold. The week-over-week diff this delta drives is proven in §M5.
+
 ### Click-through — ≤2 clicks to raw data (SPEC M4 acceptance)
 
 Live headless-chromium run against the daemon replaying the fixture:
