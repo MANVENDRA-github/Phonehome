@@ -9,6 +9,7 @@
 //! a session cookie from `POST /control/login`; a 401/403 triggers one re-login
 //! and retry. Failures degrade to an error the ingest loop logs and retries.
 
+use crate::ingest::{SOURCE_CONNECT_TIMEOUT, SOURCE_HTTP_TIMEOUT};
 use phonehome_core::{Batch, IngestError, Ingestor, QueryEvent};
 use serde::Deserialize;
 use time::format_description::well_known::Rfc3339;
@@ -74,6 +75,8 @@ impl AdguardIngestor {
             // cookie_store keeps the session cookie from /control/login.
             http: reqwest::Client::builder()
                 .cookie_store(true)
+                .timeout(SOURCE_HTTP_TIMEOUT)
+                .connect_timeout(SOURCE_CONNECT_TIMEOUT)
                 .build()
                 .expect("reqwest client"),
             logged_in: false,
@@ -194,6 +197,7 @@ impl Ingestor for AdguardIngestor {
         let mut newest: Option<String> = None;
         let mut events = Vec::new();
         let mut older_than: Option<String> = None;
+        let mut skipped_bad_ip = 0usize;
 
         'pages: for _ in 0..MAX_PAGES {
             let page = self.fetch_page(older_than.as_deref()).await?;
@@ -210,8 +214,12 @@ impl Ingestor for AdguardIngestor {
                 if parse_nanos(&entry.time)? <= cursor_nanos {
                     break 'pages; // reached already-delivered territory
                 }
-                if let Some(ev) = self.to_event(entry) {
-                    events.push(ev);
+                match self.to_event(entry) {
+                    Some(ev) => events.push(ev),
+                    // `time` already parsed above, so the only way to_event
+                    // bails is an unparseable `client` — AdGuard reports a
+                    // ClientID/hostname there when one is configured.
+                    None => skipped_bad_ip += 1,
                 }
             }
 
@@ -219,6 +227,13 @@ impl Ingestor for AdguardIngestor {
                 break; // last page
             }
             older_than = oldest_time; // page all-new; go further back
+        }
+
+        if skipped_bad_ip > 0 {
+            tracing::warn!(
+                skipped_bad_ip,
+                "adguard: skipped events with unparseable client ip"
+            );
         }
 
         // Keep the old cursor if this poll saw nothing new.
@@ -369,5 +384,37 @@ mod tests {
         let batch = ing.poll(Some("2026-07-03T09:00:00Z")).await.unwrap();
         assert!(batch.events.is_empty());
         assert_eq!(batch.next_cursor.as_deref(), Some("2026-07-03T09:00:00Z"));
+    }
+
+    /// AdGuard reports a ClientID/hostname in `client` when one is configured.
+    /// Such entries can't map to a `QueryEvent` and are dropped — but the drop
+    /// must not take the rest of the page or the cursor with it.
+    #[tokio::test]
+    async fn non_ip_client_is_skipped_without_losing_the_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/control/login"))
+            .respond_with(login_ok())
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/control/querylog"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": [
+                    entry("2026-07-03T10:00:03Z", "a.example.", "my-laptop", "NotFilteredNotFound"),
+                    entry("2026-07-03T10:00:02Z", "b.example.", "192.168.1.30", "NotFilteredNotFound"),
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let mut ing = AdguardIngestor::new("adguard", server.uri(), "admin", "pw");
+        let batch = ing.poll(None).await.unwrap();
+
+        assert_eq!(batch.events.len(), 1, "only the IP-client entry maps");
+        assert_eq!(batch.events[0].domain, "b.example");
+        // Cursor still advances to the newest entry seen, skipped or not —
+        // otherwise the unparseable entry would be re-fetched every poll.
+        assert_eq!(batch.next_cursor.as_deref(), Some("2026-07-03T10:00:03Z"));
     }
 }

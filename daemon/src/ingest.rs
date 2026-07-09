@@ -6,6 +6,16 @@ use phonehome_core::Ingestor;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
+/// Whole-request ceiling for a source HTTP call. reqwest defaults to *no*
+/// timeout: a source that accepts the connection and never answers would park
+/// the poll on its `.await` forever, silently killing ingestion for that source
+/// until the daemon restarts. Generous enough for a slow Pi-hole page.
+pub const SOURCE_HTTP_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Connect-phase ceiling, so an unroutable `base_url` fails the wizard's
+/// "test connection" promptly instead of hanging the request task.
+pub const SOURCE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

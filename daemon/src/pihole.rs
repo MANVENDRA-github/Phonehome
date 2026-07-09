@@ -10,6 +10,7 @@
 //! Failures degrade to an error the ingest loop logs and retries; the daemon
 //! never crash-loops on a source outage.
 
+use crate::ingest::{SOURCE_CONNECT_TIMEOUT, SOURCE_HTTP_TIMEOUT};
 use phonehome_core::{Batch, IngestError, Ingestor, QueryEvent};
 use serde::{Deserialize, Serialize};
 
@@ -88,7 +89,11 @@ impl PiholeIngestor {
             base_url: base_url.into().trim_end_matches('/').to_owned(),
             password: password.into(),
             page_size: 1000,
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(SOURCE_HTTP_TIMEOUT)
+                .connect_timeout(SOURCE_CONNECT_TIMEOUT)
+                .build()
+                .expect("reqwest client"),
             sid: None,
         }
     }
