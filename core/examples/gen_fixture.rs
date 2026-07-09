@@ -300,7 +300,7 @@ const DEVICES: &[Device] = &[
 /// and the injected week-2 change stands out instead of being a window artifact.
 const END_TS_MS: i64 = 1_782_950_400_000;
 const DAYS: i64 = 14;
-/// Keeps the committed fixture ~7k events / ~1.2 MB while preserving each
+/// Keeps the committed fixture ~6k events / ~0.9 MB while preserving each
 /// device's relative chattiness (raised 5→10 at M5 when the window doubled to
 /// 14 days). Lower it to generate denser load locally.
 const RATE_DIVISOR: usize = 10;

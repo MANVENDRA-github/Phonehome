@@ -25,7 +25,7 @@ Ground rules for every milestone:
 **Proof:** before/after device table from a real run. PROOF.md §M2.
 
 ## M3 — Enrichment + scorecard ✅ (done 2026-07-03 — evidence: PROOF.md §M3; weights provisional per D-012, AdGuard validated via wiremock pending a live instance)
-**Deliverable:** destination enrichment (oisd + StevenBlack membership, GeoLite2 country, `entities.toml` mapping), weekly snapshot job, explainable scorecard + score config; AdGuard Home adapter (second live backend, proves D-003's boundary).
+**Deliverable:** destination enrichment (oisd + StevenBlack membership, country, `entities.toml` mapping), weekly snapshot job, explainable scorecard + score config; AdGuard Home adapter (second live backend, proves D-003's boundary). *Shipped with country sourced from the entity map rather than the originally-specified GeoLite2 — see D-011.*
 **Accept:** every fixture domain enriched (or explicitly `unknown`); scorecard renders with its inputs visible; **spike:** scorecards computed on ≥1 real household's data and sanity-reviewed — weights adjusted and logged as a D-xxx.
 **Proof:** enrichment coverage stats + a real (redacted) scorecard screenshot. PROOF.md §M3.
 

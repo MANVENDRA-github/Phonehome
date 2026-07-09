@@ -342,8 +342,12 @@ async fn create_source(
     if let (Some(lat), Some(lon)) = (req.home_lat, req.home_lon) {
         if lat.abs() <= 90.0 && lon.abs() <= 180.0 {
             let store = state.store.clone();
-            if let Err(e) = tokio::task::spawn_blocking(move || store.set_home(lat, lon)).await {
-                tracing::error!(error = %e, "persist home task panicked");
+            match tokio::task::spawn_blocking(move || store.set_home(lat, lon)).await {
+                Ok(Ok(())) => {}
+                // The inner Result is the DB write. Matching only the outer
+                // JoinError silently dropped a failed set_home.
+                Ok(Err(e)) => tracing::error!(error = %e, "persist home failed"),
+                Err(e) => tracing::error!(error = %e, "persist home task panicked"),
             }
         }
     }
@@ -380,7 +384,14 @@ fn resolve_window(hours: Option<i64>) -> Result<Option<(i64, i64)>, (StatusCode,
         None => Ok(None),
         Some(h) if h > 0 => {
             let now = now_ms();
-            Ok(Some((now - h * 3_600_000, now)))
+            // `h` is attacker-controlled: `?window=9223372036854775807` overflows
+            // the multiply (panic in debug, silent wraparound to a bogus window
+            // in release). Reject rather than wrap.
+            let start = h
+                .checked_mul(3_600_000)
+                .and_then(|span| now.checked_sub(span))
+                .ok_or((StatusCode::BAD_REQUEST, "window is too large"))?;
+            Ok(Some((start, now)))
         }
         Some(_) => Err((StatusCode::BAD_REQUEST, "window must be positive hours")),
     }
@@ -590,16 +601,20 @@ async fn spawn_source(
     ingestor: Box<dyn Ingestor>,
     interval: Duration,
 ) {
+    // Hold the registry lock across abort-then-spawn. Spawning first left a
+    // window where the outgoing loop and its replacement both polled the same
+    // cursor and additively applied the same events, double-counting rollups.
+    let mut reg = state.ingestors.lock().await;
+    if let Some(old) = reg.remove(&id) {
+        old.abort();
+    }
     let handle = tokio::spawn(ingest::run(
         state.store.clone(),
         state.pulses.clone(),
         ingestor,
         interval,
     ));
-    let mut reg = state.ingestors.lock().await;
-    if let Some(old) = reg.insert(id, handle) {
-        old.abort();
-    }
+    reg.insert(id, handle);
 }
 
 /// Reads `PHONEHOME_HOME_LAT` / `PHONEHOME_HOME_LON` (decimal degrees). Both
@@ -1036,6 +1051,21 @@ mod tests {
         let res = app_for(seed_store())
             .oneshot(
                 Request::get("/api/arcs?window=-5")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// `?window=i64::MAX` used to overflow `h * 3_600_000` — a panic in debug,
+    /// a silently wrong (wrapped) window in release.
+    #[tokio::test]
+    async fn arcs_overflowing_window_is_400_not_a_panic() {
+        let res = app_for(seed_store())
+            .oneshot(
+                Request::get("/api/arcs?window=9223372036854775807")
                     .body(Body::empty())
                     .unwrap(),
             )

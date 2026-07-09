@@ -2,6 +2,19 @@
 
 All notable changes to Phonehome. Format loosely follows [Keep a Changelog](https://keepachangelog.com/); this project uses milestone-based development (see [SPEC.md](SPEC.md)).
 
+## [Unreleased]
+
+### Fixed
+- **Source polls can no longer hang forever.** The Pi-hole and AdGuard HTTP clients had no timeout (reqwest's default), so a source that accepted the connection and never answered parked the ingest loop on its `await` permanently — ingestion for that source died silently until the daemon restarted. Both clients now carry a 20s request and 5s connect timeout.
+- **`?window=` no longer overflows.** A large `window` (e.g. `i64::MAX`) overflowed `hours × 3_600_000` — a panic in debug, a silently wrong time window in release. Oversized windows now return `400`.
+- **AdGuard no longer drops devices in silence.** Query-log entries whose `client` is a ClientID/hostname rather than an IP were discarded with no counter and no log line, so a whole device's traffic could vanish invisibly. They are now counted and warned about, matching the Pi-hole adapter.
+- **A failed `set_home` write is now logged.** `POST /api/sources` matched only the `JoinError` from `spawn_blocking`, discarding the inner database error, so a home coordinate could silently fail to persist.
+- **Replacing a source no longer double-counts.** `spawn_source` started the new ingest loop *before* aborting the old one; both could poll the same cursor and additively apply the same events. The old loop is now aborted first, under the registry lock.
+- **`score()` honors its zero-traffic contract.** The entity- and country-spread components skipped the `total > 0` guard, so a device with no queries but nonzero spreads scored above 0 (40/100 with default weights).
+
+### Changed
+- Docs corrected to match the code: GeoIP/GeoLite2 is not used anywhere (D-011) but was still described as part of the enrichment stack; D-009 misstated the fixture as 15 devices over 8 days (it is 18 over 14); CLAUDE.md omitted the `playwright-smoke` CI job and the `/api/diffs` endpoint.
+
 ## [0.1.0] — first public release (M5)
 
 The first shippable version: `git clone` → `docker compose up` → point it at your Pi-hole/AdGuard → meet your house, in two commands.

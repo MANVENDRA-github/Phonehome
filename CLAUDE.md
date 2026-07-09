@@ -4,7 +4,7 @@ Read this first in every session. It exists so any AI coding agent (Claude Code,
 
 ## What this project is
 
-**Phonehome** — a self-hosted privacy radar for home networks. It ingests DNS query logs from Pi-hole v6 / AdGuard Home (never packet capture), attributes queries to named LAN devices, tags destinations against tracker blocklists + GeoIP + a company-entity map, and renders per-device privacy scorecards with weekly diffs plus a WebGPU globe of device→destination arcs. 100% local, zero telemetry, ships as one `docker compose up`.
+**Phonehome** — a self-hosted privacy radar for home networks. It ingests DNS query logs from Pi-hole v6 / AdGuard Home (never packet capture), attributes queries to named LAN devices, tags destinations against tracker blocklists + a company-entity map (which also supplies the destination country — not GeoIP, see D-011), and renders per-device privacy scorecards with weekly diffs plus a WebGPU globe of device→destination arcs. 100% local, zero telemetry, ships as one `docker compose up`.
 
 Current phase: **M5 (ship) DONE — merged to `main` (#10→#14) and released as v0.1.0 (2026-07-04); evidence PROOF §M5. All v1 milestones M0–M5 complete; the repo is shipped.** Post-v1 work is now driven by the open follow-ups below (and any new SPEC milestones). Open follow-ups: live Pi-hole/AdGuard validation + a real anonymized fixture (D-009 — hero GIF and diff media ship fixture-labeled until then, re-record before soft-launch); real-household scorecard weight tuning (D-012); optional user-provided GeoLite2 for unmapped domains (D-011); automated DHCP/mDNS discovery (deferred at M2); local Docker blocked on machine virtualization + no docker CLI on the dev box, so container validation is CI-only (PROOF §M0/§M5).
 
@@ -37,7 +37,7 @@ Current phase: **M5 (ship) DONE — merged to `main` (#10→#14) and released as
 
 ## Stack & commands (confirmed at M0)
 
-Rust workspace: `daemon/` (bin — Axum 0.8, tokio, rust-embed) + `core/` (lib — the normalized `QueryEvent` model). UI: `ui/` — Vite 6 + React 19 + TypeScript + Tailwind v4 + three.js 0.185 pinned exact (WebGPU + TSL, WebGL2 fallback — see D-013; `npm test` = vitest for globe math/centroids). Deploy: multi-stage Dockerfile + docker-compose (one service, one volume). CI: `.github/workflows/ci.yml` — `build-test` (UI build, fmt, clippy `-D warnings`, tests) + `docker-smoke` (compose up + live health/page probes).
+Rust workspace: `daemon/` (bin — Axum 0.8, tokio, rust-embed) + `core/` (lib — the normalized `QueryEvent` model). UI: `ui/` — Vite 6 + React 19 + TypeScript + Tailwind v4 + three.js 0.185 pinned exact (WebGPU + TSL, WebGL2 fallback — see D-013; `npm test` = vitest for globe math/centroids). Deploy: multi-stage Dockerfile + docker-compose (one service, one volume). CI: `.github/workflows/ci.yml` — `build-test` (UI build, vitest, fmt, clippy `-D warnings`, cargo test) + `playwright-smoke` (globe e2e: replay fixture → arcs → drill-down) + `docker-smoke` (compose up + live health/page probes).
 
 **Build order matters:** the daemon embeds `ui/dist` at compile time — always build the UI before the daemon.
 
@@ -61,6 +61,7 @@ curl -XPOST localhost:8480/api/devices/rename -d '{"id":1,"name":"Living Room TV
 curl -XPOST localhost:8480/api/devices/merge  -d '{"source":2,"into":1}' -H content-type:application/json
 curl localhost:8480/api/devices/1/scorecard   # M3: privacy score + its component inputs
 curl localhost:8480/api/snapshots             # M3: weekly per-device snapshot history
+curl localhost:8480/api/diffs                 # M5: week-over-week per-device deltas + new domains
 curl "localhost:8480/api/arcs?window=24"      # M4: device→country arcs (+ unmapped_queries); window in hours, omit for all data
 curl "localhost:8480/api/arcs/domains?device=1&country=US"   # M4: domains behind one arc
 curl "localhost:8480/api/rollups?device=1&domain=api.ring.com"  # M4: raw hourly buckets
