@@ -15,7 +15,7 @@ One Rust service (daemon + API + embedded static UI) plus a SQLite file. The bro
  (adapters behind      │  │  source) │                 │ identity │   └─────┬──────┘   │ snapshots)       │    │
   one Ingestor trait;  │  └──────────┘                 │ + enrich │         │          └──────────────────┘    │
   fixture replayer     │        ▲                      └──────────┘         │                                  │
-  is a third impl)     │        │ static datasets: OUI table · GeoLite2 ·   │        ┌───────────────────┐     │
+  is a third impl)     │        │ static datasets: OUI table ·              │        ┌───────────────────┐     │
                        │        │ tracker blocklists · entity map          └───────▶│ Axum HTTP API     │     │
                        │        └──────────────────────────────────────────────────▶│ /api/* + SSE      │     │
                        │                                                            │ /stream + embedded│     │

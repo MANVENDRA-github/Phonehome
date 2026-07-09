@@ -12,7 +12,7 @@
 
 - **Ingests DNS query logs** from Pi-hole v6 or AdGuard Home over their APIs. No packet capture, no ARP spoofing, no interception hardware — if you run a DNS filter, you already have the data.
 - **Identifies devices** on your LAN (MAC OUI vendor lookup, mDNS and DHCP hostnames) so queries belong to *"LG TV — living room"*, not `192.168.1.37`.
-- **Tags every destination** against public tracker blocklists and GeoIP, and maps domains to the companies behind them.
+- **Tags every destination** against public tracker blocklists, and maps domains to the companies behind them — and to the country that company answers to (from the entity map, not GeoIP).
 - **Scores each device** with a privacy scorecard, and diffs it weekly: *"your new doorbell added 6 tracker domains this week."*
 - **Renders the globe** — a WebGPU world map with live arcs from each device to the ad networks and tracker endpoints it contacts, in your browser, entirely on your machine.
 

@@ -38,12 +38,12 @@ Secondary hook with durable utility: the **weekly diff** — *"your new doorbell
 - **M-1. Pi-hole v6 API poller** — incremental ingestion of DNS query history (client IP/MAC, domain, timestamp, blocked/allowed status) into local storage. Replayable fixture for development without a live Pi-hole.
 - **M-2. AdGuard Home poller** — same contract, second first-class backend (proves the source-agnostic ingestion boundary).
 - **M-3. Device identity** — merge MAC OUI vendor lookup + DHCP hostnames + mDNS names into a persistent device registry; manual rename/merge via UI. Queries attribute to devices, not IPs.
-- **M-4. Destination enrichment** — tag each queried domain against public tracker/ad blocklists (oisd, StevenBlack), GeoIP it (MaxMind GeoLite2), and map domain → owning entity (e.g., `samsungads.com` → Samsung Ads) via a curated entity list.
+- **M-4. Destination enrichment** — tag each queried domain against public tracker/ad blocklists (oisd, StevenBlack), attach a destination country, and map domain → owning entity (e.g., `samsungads.com` → Samsung Ads) via a curated entity list. *Built without GeoIP: the entity list carries the country (D-011).*
 - **M-5. Per-device privacy scorecard** — score from tracker share, entity diversity, country spread, chattiness; explainable (show the inputs, never a black-box number).
 - **M-6. Weekly diff** — snapshot per device per week; scorecard shows deltas ("+6 tracker domains, +2 countries") with the new domains listed.
 - **M-7. The globe** — WebGPU (WebGL fallback) world map with device→destination arcs, live-updating, filter by device/category, click an arc → the underlying domains and queries.
 - **M-8. Single docker-compose install** — one service (daemon + embedded UI) + volume. First-run setup wizard: paste Pi-hole/AdGuard URL + token, see data within 60 seconds.
-- **M-9. 100% local operation** — no cloud calls except user-initiated data downloads (blocklists, GeoLite2 DB, OUI table — all cacheable/bundleable), zero telemetry.
+- **M-9. 100% local operation** — no cloud calls except user-initiated data downloads (blocklists, OUI table — all cacheable/bundleable), zero telemetry.
 
 ### Should have
 - S-1. Live mode — SSE stream so new queries appear on the globe within seconds of polling.
@@ -82,7 +82,7 @@ Secondary hook with durable utility: the **weekly diff** — *"your new doorbell
 | **Pi-hole/AdGuard API churn** (Pi-hole v6 API is new) | Med | Version-pinned adapters behind one ingestion trait; replayable fixtures decouple dev from live APIs. |
 | **Fast follow** — the wedge was verified open (July 2026) but is cheap to copy once demonstrated | Med | Speed + the globe's execution quality + weekly-diff utility loop; ship M1–M4 before broadcasting. |
 | **Entity mapping quality** — domain→company data is the weakest public dataset | Med | Start with top-N tracker entities (covers most arcs); ship the mapping as editable data files; accept community PRs. |
-| **GeoLite2 licensing** — requires (free) MaxMind account for updates | Low | Document it in setup; ship a bundled snapshot where license permits; degrade gracefully (globe needs country-level only). |
+| **GeoLite2 licensing** — requires (free) MaxMind account for updates | Low | *Retired: D-011 dropped GeoIP entirely; the entity map supplies the country, so no MaxMind account or redistributable `.mmdb` is needed.* |
 
 ## 7. Post-v1 roadmap (v2 candidates, unordered)
 - unbound/dnsmasq/BIND adapters; standalone DNS-forwarder mode (serves users with no Pi-hole)
