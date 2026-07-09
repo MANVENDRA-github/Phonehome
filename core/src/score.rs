@@ -87,8 +87,19 @@ pub fn score(inputs: ScoreInputs, weights: ScoreWeights) -> Scorecard {
     } else {
         0.0
     };
-    let entity_spread = (inputs.distinct_tracker_entities.max(0) as f64 / ENTITY_CAP).min(1.0);
-    let country_spread = (inputs.distinct_countries.max(0) as f64 / COUNTRY_CAP).min(1.0);
+    // Every component is gated on `total`, so a device with no traffic scores 0
+    // even if a caller hands us nonzero spreads (`aggregate` never does, but
+    // `score` is public and its contract above promises this).
+    let entity_spread = if total > 0.0 {
+        (inputs.distinct_tracker_entities.max(0) as f64 / ENTITY_CAP).min(1.0)
+    } else {
+        0.0
+    };
+    let country_spread = if total > 0.0 {
+        (inputs.distinct_countries.max(0) as f64 / COUNTRY_CAP).min(1.0)
+    } else {
+        0.0
+    };
     let chattiness = if total > 0.0 {
         ((total + 1.0).log10() / (CHATTINESS_CAP + 1.0).log10()).min(1.0)
     } else {
@@ -138,6 +149,17 @@ mod tests {
         let s = score(inputs(0, 0, 0, 0), ScoreWeights::default());
         assert_eq!(s.score, 0);
         assert_eq!(s.components.tracker_share, 0);
+    }
+
+    /// The spread components used to bypass the `total > 0` guard, so a device
+    /// with zero traffic but nonzero spreads scored above 0 — contradicting the
+    /// "total of 0 yields a score of 0" contract on `score`.
+    #[test]
+    fn zero_traffic_scores_zero_even_with_nonzero_spreads() {
+        let s = score(inputs(0, 0, 8, 6), ScoreWeights::default());
+        assert_eq!(s.score, 0);
+        assert_eq!(s.components.entity_spread, 0);
+        assert_eq!(s.components.country_spread, 0);
     }
 
     #[test]
